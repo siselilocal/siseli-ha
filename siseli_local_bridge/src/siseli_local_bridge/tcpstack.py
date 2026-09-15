@@ -329,8 +329,20 @@ def handle_tcp(
         return
 
     if flags & TCP_FIN:
-        conn.receive(int(pkt[TCP].seq), b"")  # advance past the FIN's own sequence slot if in order
-        conn.their_next_seq = ((conn.their_next_seq or int(pkt[TCP].seq)) + 1) & 0xFFFFFFFF
+        # Same RFC 5961-style validation as the RST path above, which this
+        # originally lacked: without it, a stale FIN -- e.g. from a connection
+        # attempt the peer already abandoned, reusing the same (port, peer) key --
+        # tears down the CURRENT live connection just like an unvalidated RST would.
+        fin_seq = int(pkt[TCP].seq)
+        if conn.their_next_seq is not None and fin_seq != conn.their_next_seq:
+            log(
+                f"[LOCAL CLOUD] {peer_ip}:{peer_port} stale FIN ignored: "
+                f"seq={fin_seq} != expected={conn.their_next_seq}",
+                level="warning",
+            )
+            return
+        conn.receive(fin_seq, b"")  # advance past the FIN's own sequence slot if in order
+        conn.their_next_seq = ((conn.their_next_seq or fin_seq) + 1) & 0xFFFFFFFF
         conn.close("peer FIN")
         CONNECTIONS.pop(key, None)
         return

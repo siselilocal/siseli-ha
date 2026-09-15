@@ -31,7 +31,6 @@ cloud session, start here.
 """
 
 import json
-import os
 import random
 import re
 import string
@@ -462,54 +461,11 @@ def send_manual_refresh() -> bool:
         return False
 
 
-_PROBE_FILE = "/tmp/probe.json"
-
-
-def _send_probe_if_present() -> None:
-    """One-shot experimental probe (2026-09-12): drop a JSON file at /tmp/probe.json
-    inside the container -- {"service": "dev_rpc", "payload": {...}} -- and the next
-    1 s tick publishes it once to dtu/<id>/sub/service/<service> on the first
-    established connection, then deletes the file. Replies (any topic) appear via
-    the normal PUBLISH logging. Read-only investigation tool; never ships enabled
-    because nothing creates the file."""
-    try:
-        with open(_PROBE_FILE, "r", encoding="utf-8") as fh:
-            spec = json.load(fh)
-    except FileNotFoundError:
-        return
-    except Exception as exc:
-        log(f"[PROBE] unreadable {_PROBE_FILE}: {exc}", level="error")
-        try:
-            os.remove(_PROBE_FILE)
-        except OSError:
-            pass
-        return
-    try:
-        os.remove(_PROBE_FILE)
-    except OSError:
-        pass
-    service = spec.get("service", "dev_rpc")
-    payload_obj = spec.get("payload", {})
-    for conn in list(tcpstack.CONNECTIONS.values()):
-        dtu_id = getattr(conn, "dtu_id", None)
-        if dtu_id is None or conn.closed:
-            continue
-        topic = f"dtu/{dtu_id}/sub/service/{service}"
-        body = json.dumps(payload_obj, separators=(",", ":")).encode("utf-8")
-        topic_bytes = topic.encode("utf-8")
-        frame = _build_frame(0x30, len(topic_bytes).to_bytes(2, "big") + topic_bytes + b"\x00" + body)
-        conn.reply(frame)
-        log(f"[PROBE] sent topic={topic} payload={body.decode()}")
-        return
-    log("[PROBE] no established connection to send on", level="warning")
-
-
 def poll_due_connections() -> None:
     """Called periodically from core.py's health_logger tick. Sends a dev_rpc
     request to every established local-cloud connection whose interval has
     elapsed. A no-op when TELEMETRY_POLL_INTERVAL_SEC is 0 (nothing ever sets
     conn.next_poll_ts in that case, so the getattr below finds nothing to do)."""
-    _send_probe_if_present()
     if TELEMETRY_POLL_INTERVAL_SEC <= 0:
         return
     now = time.monotonic()

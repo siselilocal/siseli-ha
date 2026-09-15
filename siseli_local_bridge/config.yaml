@@ -1,6 +1,6 @@
 name: 'Siseli Local Bridge'
 description: 'Local bridge for Siseli-compatible inverters with MQTT discovery for Home Assistant.'
-version: '2.6.37'
+version: '2.6.38'
 slug: 'siseli_local_bridge'
 url: 'https://github.com/fadmaz/siseli-ha'
 init: false
@@ -23,7 +23,7 @@ options:
   TARGET_PORT: 1883
   LISTEN_PORT: 18899
 
-  LOCAL_CLOUD_IP: '192.168.1.200'
+  LOCAL_CLOUD_IP: ''
   LOCAL_CLOUD_PORT: 1883
   HTTP_STUB_PORT: 80
   HTTP_STUB_REAL_IPS: '8.212.16.60'

@@ -62,7 +62,19 @@ def _extract_request(buffer: bytes):
         headers[key.decode("ascii", "ignore").strip().lower()] = value.decode("ascii", "ignore").strip()
 
     body_start = header_end + len(_HEADER_END)
-    content_length = int(headers.get("content-length", "0") or "0")
+    try:
+        content_length = int(headers.get("content-length", "0") or "0")
+    except ValueError:
+        content_length = -1
+    if content_length < 0:
+        # A negative Content-Length (or one that fails to parse as an int at all)
+        # made body_start + content_length land BEFORE body_start, so the
+        # completeness check below always passed early and the resulting empty
+        # slice's "remainder" handed back nearly the whole buffer again --
+        # re-extracting and re-processing the same malformed request forever,
+        # flooding the log and growing memory without bound. Same treatment as
+        # an unparseable request line: drop the buffer instead of looping on it.
+        return None, b""
     if len(buffer) < body_start + content_length:
         return None, buffer  # headers arrived, body still incomplete
 

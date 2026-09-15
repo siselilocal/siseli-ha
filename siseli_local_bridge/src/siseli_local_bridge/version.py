@@ -4,4 +4,4 @@ Keep in sync with siseli_local_bridge/config.yaml, which Supervisor reads direct
 which cannot import Python. tests/test_packaging.py enforces that they agree.
 """
 
-__version__ = "2.6.37"
+__version__ = "2.6.38"

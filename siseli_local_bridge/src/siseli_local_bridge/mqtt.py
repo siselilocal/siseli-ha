@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Dict
 
 import paho.mqtt.client as mqtt
@@ -251,6 +252,24 @@ def subscribe_control_topics() -> None:
         client.subscribe(topic)
 
 
+#: Minimum seconds between two accepted commands for the same control topic --
+#: nothing upstream of this rate-limits a switch/button, so a stuck automation or
+#: a flaky Lovelace binding retrying rapidly would otherwise hammer the dongle
+#: with one dev_rpc write per message. Keyed by topic, written only from the
+#: single paho network thread that calls on_message.
+_CONTROL_MIN_INTERVAL_SEC = 1.0
+_CONTROL_LAST_SENT: Dict[str, float] = {}
+
+
+def _control_rate_limited(topic: str) -> bool:
+    now = time.monotonic()
+    last = _CONTROL_LAST_SENT.get(topic)
+    if last is not None and now - last < _CONTROL_MIN_INTERVAL_SEC:
+        return True
+    _CONTROL_LAST_SENT[topic] = now
+    return False
+
+
 def _handle_control_message(topic: str, raw_payload: bytes) -> None:
     # Deferred import: fakecloud.py imports parsers.py at module load, and
     # parsers.py already imports this module (mqtt.py) from inside a function for
@@ -260,6 +279,10 @@ def _handle_control_message(topic: str, raw_payload: bytes) -> None:
 
     payload = raw_payload.decode("utf-8", errors="replace").strip()
 
+    if _control_rate_limited(topic):
+        log(f"[HA MQTT] control message on {topic!r} ignored: rate limit", level="warning")
+        return
+
     fn_name = _CONTROL_BUTTON_TOPICS.get(topic)
     if fn_name is not None:
         getattr(fakecloud, fn_name)()
@@ -268,7 +291,14 @@ def _handle_control_message(topic: str, raw_payload: bytes) -> None:
     setting = _CONTROL_SWITCH_TOPICS.get(topic)
     if setting is None:
         return
-    turn_on = payload.upper() == "ON"
+    payload_upper = payload.upper()
+    if payload_upper not in ("ON", "OFF"):
+        # Anything else -- including an empty message -- used to fall through to
+        # the `!= "ON"` comparison below and silently sent OFF no matter what was
+        # actually published. Unknown payloads are now ignored outright instead.
+        log(f"[HA MQTT] control message on {topic!r} ignored: unexpected payload {payload!r}", level="warning")
+        return
+    turn_on = payload_upper == "ON"
     if fakecloud.send_control_switch(setting, turn_on):
         # Optimistic: the dongle's dev_rpc_reply to a command carries no field this
         # bridge has confirmed means success/failure (see README section 6), so

@@ -2,13 +2,16 @@
 
 INTERFACE="$(bashio::config 'INTERFACE')"
 IP_ADDRESS="$(bashio::config 'IP_ADDRESS')"
-ADDED=false
 
+# Always attempted on exit, not gated on this run being the one that added it --
+# a run that starts up and finds the address already present (because a prior
+# run was SIGKILLed or OOM-killed before its own cleanup ran) used to skip
+# removal entirely, leaving the address stuck on the host until a reboot. This
+# add-on owns the address for as long as it runs, regardless of which run put
+# it there, so a normal stop always removes it.
 cleanup() {
-    if [ "$ADDED" = true ]; then
-        ip addr del "$IP_ADDRESS" dev "$INTERFACE" 2>/dev/null || true
-        echo "[Network IP Alias] Removed $IP_ADDRESS from $INTERFACE"
-    fi
+    ip addr del "$IP_ADDRESS" dev "$INTERFACE" 2>/dev/null || true
+    echo "[Network IP Alias] Removed $IP_ADDRESS from $INTERFACE"
 }
 
 trap cleanup TERM INT EXIT
@@ -34,7 +37,6 @@ else
         echo "[Network IP Alias] Could not add $IP_ADDRESS to $INTERFACE"
         exit 1
     fi
-    ADDED=true
     echo "[Network IP Alias] Added $IP_ADDRESS to $INTERFACE"
 fi
 
