@@ -3,7 +3,7 @@ import json
 import re
 import time
 from datetime import datetime
-from typing import Dict, FrozenSet, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 from . import state as _shared_state
 from .loggers import log, log_kv, json_log, log_payload_preview, log_error_always, hex_preview
@@ -126,17 +126,28 @@ BATTERY_CURRENT_MAX_A = 1000
 #: saying "throttled" there would swap a crash for a new false statement. "Published to
 #: HA" is verbatim on purpose: captures/README.md correlates it against the vendor
 #: portal's UpdateTime, and tests/captures.py records EXPECTED_TELEMETRY's provenance
-#: from it.
+#: from it. The two "flush" states are the later line for a throttled change, worded so
+#: they never contain that verbatim string: a second copy seconds after the first would
+#: blur the correlation.
 PUBLISH_OUTCOMES = {
     "sent": "Published to HA",
     "throttled": "Decoded, publish throttled",
     "broker-unreachable": "Decoded but NOT published -- broker unreachable",
     "no-broker-yet": "Decoded but NOT published -- no broker connection yet",
+    "flushed": "Deferred change published to HA",
+    "flush-unreachable": "Deferred change NOT published -- broker unreachable",
 }
 
 #: One-shot guard so a rejected current is reported once, not per payload.
 BATTERY_CURRENT_REJECTED_LOGGED = False
 GRID_VALUE_REJECTED_LOGGED = False
+#: One-shot guard for a WdRR sign that contradicts the published flow direction. The
+#: disagreement is reported, not resolved: nobody has captured the grid path
+#: non-zero, so which token is right is unknown. Ported from upstream fadmaz/siseli-ha
+#: 2.6.23 (fix/2.6.23, commit d11e66e).
+GRID_DIRECTION_CONFLICT_LOGGED = False
+#: One-shot guard for a cell list longer than the 16 cell entities. Same origin.
+CELL_LIST_OVERFLOW_LOGGED = False
 
 #: Every block name _try_ascii_schema knows how to decode.
 #:
@@ -165,11 +176,23 @@ _CHECKSUM_TAIL_BYTES = 2
 
 #: One-shot guard so a foreign device is diagnosed once, not on every payload.
 UNSUPPORTED_PROTOCOL_LOGGED = False
-#: Integration clock per energy domain, holding time.monotonic() readings -- which are
-#: meaningless across a process boundary and must never be persisted. A dict rather than one global per domain, so
+#: Integration clock per energy domain, holding time.monotonic() readings. They mean
+#: something only within one host boot, so they are persisted together with the boot id
+#: and resumed only in that boot (restore_energy_clocks). A dict rather than one global per domain, so
 #: adding a calculated energy counter does not need a new module-level name -- and so
 #: the test isolation helper has one thing to save instead of a growing list.
 LAST_ENERGY_TS: Dict[str, float] = {}
+#: Domains whose clock was resumed from the cache and not used since. Their first
+#: interval spans the bridge's own downtime, so it is checked against the integration
+#: limit before it is credited: past the limit it starts a new baseline, unclamped.
+RESTORED_ENERGY_DOMAINS: Set[str] = set()
+#: The counters each domain's clock gates. A clock resumes only if these were restored.
+ENERGY_DOMAIN_COUNTERS: Dict[str, Tuple[str, ...]] = {
+    "battery": ("c_battery_charge_energy_kwh", "c_battery_discharge_energy_kwh"),
+    "grid": ("c_grid_import_energy_kwh",),
+    "generation": ("c_generation_energy_kwh",),
+    "load": ("c_load_energy_kwh",),
+}
 _FLOW_EVICT_COUNTER: int = 0
 _FLOW_EVICT_INTERVAL: int = 200  # Prune stale TCP flows every N state lookups.
 
@@ -216,7 +239,7 @@ def is_reasonable_topic(topic: str) -> bool:
 def dtu_id_from_topic(topic):
     """The collector id, from the topic segment the inverter publishes under.
 
-    Topics look like ``dtu/12345678901234567890/pub/event/dev_prop_post``. The vendor
+    Topics look like ``dtu/34545375423553743260/pub/event/dev_prop_post``. The vendor
     portal shows the same twenty digits as the DTU, and its Serial Number is the first
     ten of them -- but the portal's trailing ``-1`` is a device index that appears
     nowhere on the wire, so only the raw id is reported and nothing is synthesised.
@@ -622,6 +645,59 @@ def _get_mqtt_publish():
     return mqtt.publish_sensor_discovery, mqtt.publish_grouped_state
 
 
+def energy_clocks_record() -> Optional[Dict[str, object]]:
+    """The integrator's clocks tagged with the host boot they were read in, or None."""
+    boot_id = _shared_state.host_boot_id()
+    if not boot_id or not LAST_ENERGY_TS:
+        return None
+    return {"boot_id": boot_id, "clocks": dict(LAST_ENERGY_TS)}
+
+
+def restore_energy_clocks(
+    saved: object, restored_keys, reset: bool = False, now: Optional[float] = None
+) -> Dict[str, str]:
+    """Resume the energy clocks an earlier process saved in this same host boot.
+
+    Returns {domain: outcome} for the startup log. A domain resumes only when the record
+    is well formed, both boot ids are known and equal, its reading is a finite number no
+    later than now, and every counter the domain gates was restored as well. Anything
+    else leaves the domain to start a new baseline, which is what every restart did
+    before this, one interval per domain, uncredited.
+    """
+    now = now if now is not None else time.monotonic()
+    if saved is None:
+        return {}
+    every = list(ENERGY_DOMAIN_COUNTERS)
+    if reset:
+        return {domain: "new baseline (counters reset)" for domain in every}
+    if not isinstance(saved, dict) or not isinstance(saved.get("clocks"), dict):
+        return {domain: "new baseline (malformed record)" for domain in every}
+    saved_boot = saved.get("boot_id")
+    current_boot = _shared_state.host_boot_id()
+    if not isinstance(saved_boot, str) or not saved_boot or current_boot is None:
+        return {domain: "new baseline (no boot id)" for domain in every}
+    if saved_boot != current_boot:
+        return {domain: "new baseline (host rebooted)" for domain in every}
+
+    outcomes: Dict[str, str] = {}
+    for domain, counters in ENERGY_DOMAIN_COUNTERS.items():
+        value = saved["clocks"].get(domain)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value \
+                or value in (float("inf"), float("-inf")):
+            outcomes[domain] = "new baseline (malformed reading)"
+        elif value > now:
+            outcomes[domain] = "new baseline (reading in the future)"
+        elif not all(key in restored_keys for key in counters):
+            outcomes[domain] = "new baseline (counters not restored)"
+        else:
+            LAST_ENERGY_TS[domain] = float(value)
+            RESTORED_ENERGY_DOMAINS.add(domain)
+            outcomes[domain] = f"resumed ({int(now - value)}s old)"
+    return outcomes
+
+
 def heartbeat_due(now: Optional[float] = None) -> bool:
     """Whether the retained state is old enough to be worth republishing.
 
@@ -637,20 +713,53 @@ def heartbeat_due(now: Optional[float] = None) -> bool:
     return (now - LAST_PUBLISH_TS) >= interval
 
 
-def republish_state(now: Optional[float] = None) -> bool:
-    """Republish the retained state so it does not age out. Returns True if sent."""
+def pending_publish_due(now: Optional[float] = None) -> bool:
+    """Whether a change the publish throttle deferred is now due.
+
+    parse_payload holds a change made inside the UPDATE_INTERVAL_SEC window and, until
+    this, published it only with the next payload -- or the heartbeat. Nothing flushed
+    it when the window ended, although the comment at the throttle said it would. A
+    payload landing inside the previous one's window reaches Home Assistant a whole
+    cadence late without this.
+    """
+    if not PENDING_PUBLISH:
+        return False
+    now = now if now is not None else time.monotonic()
+    return (now - LAST_PUBLISH_TS) >= UPDATE_INTERVAL_SEC
+
+
+def republish_state(now: Optional[float] = None, due=None) -> bool:
+    """Republish the retained state without a payload. Returns True if sent.
+
+    Runs on the health thread while parse_payload publishes from the capture thread, so
+    both take the snapshot they publish, publish it and do the bookkeeping under
+    PUBLISH_LOCK. Without it a flush that took its snapshot before a payload was decoded
+    could publish it after, leaving the older values retained. ``due``, when given, is
+    checked again under the lock, so a publish the capture thread made in the meantime
+    is not repeated.
+    """
     global LAST_PUBLISH_TS, PENDING_PUBLISH
-    if not _shared_state.DISCOVERY_PUBLISHED:
-        return False
-    snapshot = _shared_state.snapshot_state()
-    if not snapshot:
-        return False
-    _, publish_grouped_state = _get_mqtt_publish()
-    delivered = publish_grouped_state(snapshot)
-    # Bookkeeping advances either way, for the same reason as the payload path: a
-    # CONNACK republishes everything, so a dropped heartbeat self-heals.
-    LAST_PUBLISH_TS = now if now is not None else time.monotonic()
-    PENDING_PUBLISH = False
+    with _shared_state.PUBLISH_LOCK:
+        if due is not None and not due():
+            return False
+        if not _shared_state.DISCOVERY_PUBLISHED:
+            return False
+        snapshot = _shared_state.snapshot_state()
+        if not snapshot:
+            return False
+        flushing = PENDING_PUBLISH
+        _, publish_grouped_state = _get_mqtt_publish()
+        delivered = publish_grouped_state(snapshot)
+        # Bookkeeping advances either way, for the same reason as the payload path: a
+        # CONNACK republishes everything, so a dropped heartbeat self-heals.
+        LAST_PUBLISH_TS = now if now is not None else time.monotonic()
+        PENDING_PUBLISH = False
+    if flushing:
+        # The payload that carried this change was logged as throttled. Without this
+        # line nothing records when -- or whether -- its values reached Home Assistant.
+        # The heartbeat stays silent: it republishes nothing new.
+        outcome = PUBLISH_OUTCOMES["flushed" if delivered else "flush-unreachable"]
+        log_kv(f"[{datetime.now().strftime('%H:%M:%S')}] {outcome}", level="info")
     return delivered
 
 
@@ -665,8 +774,18 @@ def _write_state_cache(snapshot: Dict[str, object], now: Optional[float] = None)
     now = now if now is not None else time.monotonic()
     if LAST_CACHE_WRITE_TS and (now - LAST_CACHE_WRITE_TS) < STATE_CACHE_INTERVAL_SEC:
         return False
+    # A copy: the caller publishes `snapshot` to MQTT right after this, and the clocks
+    # must never reach the broker. Read after the snapshot, on this same thread -- the
+    # only writer of both -- so the pair on disk always comes from one payload.
+    record = dict(snapshot)
     try:
-        _shared_state.atomic_write_json(STATE_CACHE_FILE, snapshot)
+        clocks = energy_clocks_record()
+    except Exception:
+        clocks = None
+    if clocks:
+        record[_shared_state.ENERGY_CLOCKS_CACHE_KEY] = clocks
+    try:
+        _shared_state.atomic_write_json(STATE_CACHE_FILE, record)
         LAST_CACHE_WRITE_TS = now
         return True
     except Exception as exc:
@@ -730,6 +849,19 @@ class SolarParser:
         dt_seconds = max(0.0, now_ts - previous)
 
         max_dt_seconds = SolarParser._energy_max_dt()
+        if domain in RESTORED_ENERGY_DOMAINS:
+            # The first interval after a restart spans the bridge's own downtime. Within
+            # the limit it is credited like any other; past it, it is not an interval this
+            # process observed, so it starts a new baseline instead of being clamped --
+            # which keeps the clamp warning for a genuine stall.
+            RESTORED_ENERGY_DOMAINS.discard(domain)
+            if dt_seconds > max_dt_seconds:
+                log(
+                    f"[CACHE] {domain}: {int(dt_seconds)}s since the saved energy clock, over "
+                    f"the {int(max_dt_seconds)}s limit; starting a new baseline",
+                    level="info",
+                )
+                return 0.0
         if dt_seconds <= max_dt_seconds:
             return dt_seconds
 
@@ -842,6 +974,42 @@ class SolarParser:
             state["battery_status"] = "Idle"
 
     @staticmethod
+    def _grid_direction_conflicts(signed_w: Optional[float], direction: object) -> bool:
+        """Whether WdRR[6]'s sign contradicts a flow direction.
+
+        The caller passes what WdRR[7]'s code states (see _flow_code_direction), or
+        the published label when there is no usable code. The import integrator reads
+        WdRR[6]'s sign alone, so a positive sign can credit import while the code says
+        "Inverter To Mains". Every capture ever taken is +00000 with code 0, so neither
+        the sign convention nor codes 1 and 2 are verified, and the counter it would
+        change can never go down. Detect and report; do not guess which token is right.
+        """
+        if signed_w is None or direction is None or signed_w == 0:
+            return False
+        if direction == "Idle":
+            return True
+        if signed_w > 0:
+            return direction == "Inverter To Mains"
+        return direction == "Mains To Inverter"
+
+    @staticmethod
+    def _flow_code_direction(code: object) -> Optional[str]:
+        """What WdRR[7]'s code states, whether it is sent as one digit or two.
+
+        The published label honours only "0", "1" and "2" while a sign is present, so
+        a two-digit "01" is labelled from the sign and could never disagree with it.
+        The conflict check has to read the code itself.
+        """
+        if code is None:
+            return None
+        text = str(code).strip()
+        if not text.isdigit():
+            return None
+        return {"0": "Mains To Inverter", "1": "Inverter To Mains", "2": "Idle"}.get(
+            text.lstrip("0") or "0"
+        )
+
+    @staticmethod
     def _apply_energy_dashboard_calculations(state: Dict[str, object], now_ts: Optional[float] = None) -> None:
         """Derive the calculated power and energy sensors.
 
@@ -905,6 +1073,28 @@ class SolarParser:
                 grid_import_power_w = mains_signed_w * factor
 
             state["c_grid_import_power_w"] = int(round(grid_import_power_w))
+
+            # Crediting above is deliberately unchanged: which of the two tokens is
+            # right is unknown, and a wrong fix is irreversible on a total_increasing
+            # counter. The first real conflict on an on-grid install is the evidence.
+            direction = state.get("mains_current_flow_direction")
+            code_direction = SolarParser._flow_code_direction(state.get("mains_flow_code"))
+            if SolarParser._grid_direction_conflicts(mains_signed_w, code_direction or direction):
+                global GRID_DIRECTION_CONFLICT_LOGGED
+                if not GRID_DIRECTION_CONFLICT_LOGGED:
+                    GRID_DIRECTION_CONFLICT_LOGGED = True
+                    log_kv(
+                        "[GRID DIRECTION CONFLICT]",
+                        level="warning",
+                        token=str(state.get("mains_wdrr_token", ""))[:32],
+                        flow_code=str(state.get("mains_flow_code", ""))[:8],
+                        code_says=code_direction,
+                        direction=direction,
+                        note=(
+                            "the grid power sign and the flow direction disagree; import is "
+                            "still credited from the sign, as before -- please report this line"
+                        ),
+                    )
 
             dt_seconds = SolarParser._energy_dt_seconds("grid", now)
             SolarParser._accumulate_kwh(
@@ -1387,7 +1577,11 @@ class SolarParser:
             return state
 
         state["bms_cell_count"] = len(cell_values)
-        if len(cell_values) > 16:
+        global CELL_LIST_OVERFLOW_LOGGED
+        if len(cell_values) > 16 and not CELL_LIST_OVERFLOW_LOGGED:
+            # Once per process: this fired on every payload of a device that sends
+            # more than 16 cells, which is a fact about the device, not an event.
+            CELL_LIST_OVERFLOW_LOGGED = True
             log(
                 f"[CELLS] {len(cell_values)} cells reported but only 16 entities exist; "
                 f"cells 17-{len(cell_values)} are not published",
@@ -2153,29 +2347,41 @@ class SolarParser:
                             publish_sensor_discovery(key)
 
                     global LAST_PUBLISH_TS, PENDING_PUBLISH
-                    now = time.monotonic()
-                    if changed_keys:
-                        PENDING_PUBLISH = True
+                    # Held from the snapshot to the bookkeeping, as in republish_state:
+                    # the health thread's flush publishes the same topics, and whichever
+                    # thread publishes last is what the broker keeps. The snapshot is
+                    # retaken inside the lock so that holds even if LAST_STATE ever gains
+                    # a second writer; today this thread is its only one. The merge and
+                    # the change diff stay outside, so a tick landing between them and
+                    # the lock can publish this payload's values first. This payload is
+                    # then logged as throttled and the next tick republishes the same
+                    # values -- a redundant line, never an older value left retained.
+                    with _shared_state.PUBLISH_LOCK:
+                        snapshot = _shared_state.snapshot_state()
+                        now = time.monotonic()
+                        if changed_keys:
+                            PENDING_PUBLISH = True
 
-                    elapsed = now - LAST_PUBLISH_TS
-                    # A change is deferred to the end of the throttle window, never
-                    # dropped -- the previous `or` meant any change published
-                    # immediately, so UPDATE_INTERVAL_SEC could never throttle
-                    # anything and the option did nothing at all.
-                    due = PENDING_PUBLISH and elapsed >= UPDATE_INTERVAL_SEC
+                        elapsed = now - LAST_PUBLISH_TS
+                        # A change is deferred to the end of the throttle window, never
+                        # dropped -- the previous `or` meant any change published
+                        # immediately, so UPDATE_INTERVAL_SEC could never throttle
+                        # anything and the option did nothing at all. core.publish_tick
+                        # flushes it when the window ends if no payload does first.
+                        due = PENDING_PUBLISH and elapsed >= UPDATE_INTERVAL_SEC
 
-                    if due:
-                        publish_outcome = (
-                            "sent" if publish_grouped_state(snapshot) else "broker-unreachable"
-                        )
-                        # Advanced even when the broker refused it: on_connect
-                        # republishes the whole snapshot on every CONNACK, so a dropped
-                        # publish self-heals and retrying at a dead socket would cost a
-                        # no-op on every payload.
-                        LAST_PUBLISH_TS = now
-                        PENDING_PUBLISH = False
-                    else:
-                        publish_outcome = "throttled"
+                        if due:
+                            publish_outcome = (
+                                "sent" if publish_grouped_state(snapshot) else "broker-unreachable"
+                            )
+                            # Advanced even when the broker refused it: on_connect
+                            # republishes the whole snapshot on every CONNACK, so a
+                            # dropped publish self-heals and retrying at a dead socket
+                            # would cost a no-op on every payload.
+                            LAST_PUBLISH_TS = now
+                            PENDING_PUBLISH = False
+                        else:
+                            publish_outcome = "throttled"
 
                 # Say what actually happened. This line read "Published to HA" whether
                 # or not anything was published: it sits outside the throttle gate, and

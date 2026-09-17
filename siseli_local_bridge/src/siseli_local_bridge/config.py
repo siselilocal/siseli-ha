@@ -83,8 +83,8 @@ DNS_SPOOF_DOMAINS = tuple(
     if d.strip()
 )
 
-#: Deprecated and unused: nothing ever opened a socket. Kept so Supervisor does not
-#: reject the stored option on existing installations. Removed in 2.7.0.
+#: Deprecated and unused: nothing ever opened a socket. Still in the schema; removing it
+#: is expected to be safe (Supervisor ignores a stored key the schema no longer lists).
 LISTEN_PORT_DEPRECATED = os.getenv("LISTEN_PORT", "").strip()
 
 AUTO_INTERCEPT = os.getenv("AUTO_INTERCEPT", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -244,7 +244,7 @@ ACTIVE_DEBUG_FLAGS = tuple(name for name in DEBUG_FLAG_NAMES if _debug(name))
 
 #: Deprecated. Kept in the schema so Supervisor does not reject stored options, but
 #: deliberately ignored -- honouring it would preserve the per-packet output it was
-#: meant to remove. Removed entirely in 2.7.0.
+#: meant to remove. Still in the schema, like LISTEN_PORT.
 LOG_VERBOSE_DEPRECATED = os.getenv("LOG_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -335,6 +335,20 @@ def validate_config() -> None:
 
     if not TARGET_HOST.strip():
         errors.append("TARGET_HOST must not be empty")
+    else:
+        # Checked on the exact string, because that is what the capture compares with
+        # each packet's destination: a hostname, an IPv6 address or a stray space can
+        # never match, so nothing is ever decoded -- the only trace was TCP:1883 in the
+        # health line's drop counter, and none at all with FORWARD_ALL on.
+        try:
+            ipaddress.IPv4Address(TARGET_HOST)
+        except ValueError:
+            errors.append(
+                f"TARGET_HOST must be an IPv4 address, got {TARGET_HOST!r}: it is compared "
+                f"with each packet's destination, so anything else never matches and nothing "
+                f"would be decoded (with interception on and FORWARD_ALL_INVERTER_TRAFFIC off, "
+                f"the inverter's cloud connection would not be relayed either)"
+            )
 
     if DEVICE_ID != "siseli_local_inverter_1":
         for name, value, legacy in (
@@ -393,15 +407,15 @@ def validate_config() -> None:
 
     if LISTEN_PORT_DEPRECATED:
         print(
-            "[CONFIG WARNING] LISTEN_PORT is unused and will be removed in 2.7.0; the "
-            "bridge observes traffic rather than listening on a socket.",
+            "[CONFIG WARNING] LISTEN_PORT is unused and ignored; the bridge observes "
+            "traffic rather than listening on a socket.",
             flush=True,
         )
 
     if LOG_VERBOSE_DEPRECATED:
         print(
-            "[CONFIG WARNING] LOG_VERBOSE is deprecated and ignored; it will be removed "
-            "in 2.7.0. Use DEBUG_FLAGS with 'xray' and/or 'packets' instead.",
+            "[CONFIG WARNING] LOG_VERBOSE is deprecated and ignored. Use DEBUG_FLAGS "
+            "with 'xray' and/or 'packets' instead.",
             flush=True,
         )
 

@@ -493,9 +493,13 @@ def on_connect(_client, _userdata, _flags, rc, _properties=None):
                 # broker connection does not remember prior subscriptions.
                 publish_control_discovery()
                 subscribe_control_topics()
-            snapshot = _state.snapshot_state()
-            if any(v is not None for v in snapshot.values()):
-                publish_grouped_state(snapshot)
+            # The snapshot is taken under the lock the capture and health threads
+            # publish under, so this replay can never land after, and so overwrite, a
+            # newer state they already sent.
+            with _state.PUBLISH_LOCK:
+                snapshot = _state.snapshot_state()
+                if any(v is not None for v in snapshot.values()):
+                    publish_grouped_state(snapshot)
         else:
             # Gated: a refusing broker sends a CONNACK on every retry, so an ungated
             # line here is one error every reconnect delay for as long as the
