@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, feature/siseli-local-bridge]
   pull_request:
-    branches: [main]
+    branches: [main, feature/siseli-local-bridge]
 
 jobs:
   test:
