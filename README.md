@@ -21,6 +21,11 @@ polling, no credentials for anything but your own broker.
 > [yuraantonov11/siseli-ha](https://github.com/yuraantonov11/siseli-ha). Huge thanks to
 > the original author.
 
+> **New: 100% local mode.** This repository also ships **Siseli Local Bridge**, which can
+> replace the vendor cloud entirely: the WiFi dongle talks only to your Home Assistant
+> host, telemetry refreshes every 15 seconds, and the inverter's settings can be changed
+> from Home Assistant. See [Siseli Local Bridge — 100% local mode](#siseli-local-bridge--100-local-mode).
+
 ---
 
 ## Install
@@ -99,6 +104,172 @@ suite, and the decoded values are checked against the official app.
 Other brands on that list are reported to work but are not covered by captures. If you
 have one, a debug capture is the single most useful contribution you can make — see
 [Troubleshooting](siseli_bridge/DOCS.md#your-inverter-is-not-decoded).
+
+---
+
+---
+
+## Siseli Local Bridge — 100% local mode
+
+[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.63-blue.svg)](siseli_local_bridge/CHANGELOG.md)
+
+**Siseli Local Bridge** is the second add-on in this repository. It decodes the same
+telemetry as Siseli Inverter Bridge, and it can run in one of two modes:
+
+- **Pass-through** (default, `LOCAL_CLOUD_IP` left empty) — it listens in exactly like
+  Siseli Inverter Bridge: the dongle still talks to the vendor cloud and the official app
+  keeps working.
+- **100% local** (`LOCAL_CLOUD_IP` set) — it **impersonates the vendor cloud** on a spare
+  IP address of your Home Assistant host. The dongle never reaches the internet, the
+  bridge asks it for a full reading every 15 seconds instead of waiting for its own
+  5-minute push, and the inverter's settings become Home Assistant controls.
+
+**205 sensors across 7 devices**, 144 enabled on a fresh install, plus the controls listed
+below. **42 of the 205 sensors read `Unknown`** and cannot be decoded; like the original
+add-on, they stay disabled and publish no value rather than a made-up one.
+
+**Trade-off of the 100% local mode:** the vendor cloud no longer hears from the dongle, so
+the official app shows the inverter offline. To use the app again, go back to
+pass-through (see the end of this section).
+
+The full option reference, with every setting explained, is on the add-on's
+**Documentation** tab: [`siseli_local_bridge/DOCS.md`](siseli_local_bridge/DOCS.md).
+
+### How the local cloud works
+
+1. The **Network IP Alias** add-on (also in this repository) gives the Home Assistant host
+   one extra IPv4 address on your LAN. That address plays the vendor cloud.
+2. **ARP interception** puts the Home Assistant host between the dongle and your router,
+   as in pass-through mode.
+3. When the dongle boots, it looks up `broker.mqtt.solar.siseli.com` and
+   `dtu.access.solar.siseli.com`. The bridge **answers those DNS queries** with the extra
+   address, and answers the dongle's **HTTP bootstrap calls** (check-in, device lookup,
+   "which MQTT broker should I use"). It also answers the vendor's HTTP address the
+   dongle has cached, since some dongles skip DNS for it.
+4. The dongle then connects to a **small MQTT broker built into the bridge** on the extra
+   address. The bridge acknowledges its messages as the real cloud would, and requests a
+   full reading every `TELEMETRY_POLL_INTERVAL_SEC` seconds.
+5. An **nftables rule** stops the host's own services (the Mosquitto add-on, for example)
+   from answering on the extra address, so only the bridge does.
+6. Decoded values go to **your** MQTT broker, and Home Assistant picks them up through
+   MQTT discovery. Setting changes made in Home Assistant go back to the dongle on the
+   same connection.
+
+### Setting up the 100% local mode
+
+The addresses below are **examples**; use your own.
+
+1. Install the **Mosquitto broker** add-on and the MQTT integration, if you have not
+   already.
+2. On your router, give the WiFi dongle a **fixed address** (DHCP reservation), and pick
+   one **free address** on the same LAN for the local cloud.
+3. Add this repository (**Settings → Add-ons → Add-on Store → ⋮ → Repositories**):
+
+   ```
+   https://github.com/siselilocal/siseli-ha
+   ```
+
+4. Install **Network IP Alias** and give it the free address. On a Raspberry Pi running
+   Home Assistant OS the LAN interface is `end0`; on most other hosts it is `eth0`.
+
+   ```yaml
+   INTERFACE: end0
+   IP_ADDRESS: 192.168.1.200/24
+   ```
+
+5. Install **Siseli Local Bridge** and set at least these options (everything else can
+   stay at its default):
+
+   ```yaml
+   MQTT_HOST: core-mosquitto
+   MQTT_USER: your-mqtt-user
+   MQTT_PASSWORD: your-mqtt-password
+   INVERTER_IP: 192.168.1.50            # the dongle's fixed address
+   ROUTER_IP: 192.168.1.1               # your gateway
+   AUTO_INTERCEPT: true
+   LOCAL_CLOUD_IP: 192.168.1.200        # same address as Network IP Alias, without /24
+   LOCAL_CLOUD_PORT: 1883
+   HTTP_STUB_PORT: 80
+   HTTP_STUB_REAL_IPS: 8.212.16.60
+   DNS_SPOOF_DOMAIN: broker.mqtt.solar.siseli.com,dtu.access.solar.siseli.com
+   MQTT_BROKER_HOSTNAME: hongkong.broker.mqtt.solar.siseli.com
+   TELEMETRY_POLL_INTERVAL_SEC: 15
+   FORWARD_ALL_INVERTER_TRAFFIC: false
+   ```
+
+6. Start **Network IP Alias**, then **Siseli Local Bridge**, and enable **Start on boot**
+   for both.
+7. **Power-cycle the WiFi dongle.** The DNS answers and the HTTP bootstrap only happen
+   when it boots; until then it stays connected to the real cloud.
+8. Within a minute the entities appear and refresh every 15 seconds. The controls are on
+   the **Siseli Local Inverter 1** device, in its **Configuration** card.
+
+### Controlling the inverter from Home Assistant
+
+Every control shows the value **read back from the inverter**, not the last value sent:
+if the inverter refuses or adjusts a setting, the entity shows what it really holds. The
+commands follow the Voltronic PI30 protocol the inverter speaks; each one below was
+checked on the test hardware against the inverter's own front panel.
+
+| Control | Manual programme | Values |
+|---|---|---|
+| Output Source Priority | 01 | SBU / SUB |
+| Grid Working Range | 03 | UPS / Appliance |
+| Battery Type | 05 | AGM … Growatt, Pylontech, … (10 types) |
+| ECO Power Saving | 08 | on / off |
+| Output Voltage | 10 | 220 / 230 / 240 V |
+| Max Utility Charge Current | 11 | 2, 10–90 A |
+| Back To Grid Voltage | 12 | 44–51 V |
+| Back To Battery Voltage | 13 | 48–58 V |
+| Charger Priority | 16 | OSO / CSO / SNU |
+| Buzzer | 18 | on / off |
+| Backlight | 20 | on / off |
+| Equalization Voltage | 31 | 48.0–60.0 V |
+| BMS Lock Machine SOC | 38 | 5–95 %, steps of 5 |
+| Restore Mains Charging SOC | 39 | 5–95 %, steps of 5 |
+| Restore Battery Discharging SOC | 40 | 5–95 %, steps of 5 |
+| Inverter Startup SOC | 41 | 5–100 %, steps of 5 |
+| Solar Supply Priority | 43 | BLU / LBU |
+| Dual Output | 60 | on / off |
+
+Plus a **BMS Communication Normal** sensor: when it reads `No`, the inverter has lost its
+BMS and the state of charge it reports is its own estimate (it read 99–100 % against a
+real 43 % in testing), so SOC-based automations should check it first.
+
+**Handle with care:**
+
+- **Battery Type.** Changing it can briefly cut the inverter's AC output; if the inverter
+  also powers your Home Assistant host, Home Assistant goes down with it. A battery type
+  the BMS does not speak raises inverter warning 61 and loses the BMS data.
+- **BMS Lock Machine SOC (programme 38)** shuts the inverter down below it. The bridge
+  refuses any value at or above the current SOC, and refuses it entirely while BMS
+  communication is lost.
+- The inverter only accepts the SOC thresholds in steps of 5, and raising programme 38
+  makes it raise programmes 39 and 62 by itself; the entities show where it settles.
+- Two vendor-app actions are **deliberately not exposed**, because they cannot be undone:
+  "Control Parameters To Default Value" (factory reset of every setting) and "Reset PV
+  Energy Storage".
+
+### Hardware used for the 100% local tests
+
+| Part | Model |
+|---|---|
+| Inverter | Datouboss 11 kW (manual 4811B), model code `HPVINV04`, firmware `0010.14`, 48 V battery system, 240 V / 50 Hz output |
+| WiFi dongle | RWB1 (Solar of Things), firmware `V1.44.5_SolarV67` |
+| Battery | WattCycle LiFePO4 3U rack server battery, 48 V 100 Ah (16 cells), BMS on the inverter's Growatt (GRO) protocol |
+| Home Assistant host | Raspberry Pi 4, Home Assistant OS, Mosquitto broker add-on, Network IP Alias add-on on `end0` |
+| PV | one string on PV1 |
+
+Other devices that use the same cloud should behave the same way, but only this setup has
+been tested in 100% local mode. Reports from other hardware are welcome.
+
+### Going back to pass-through
+
+Clear `LOCAL_CLOUD_IP` (and set `FORWARD_ALL_INVERTER_TRAFFIC: true` if the dongle does
+not reconnect), restart the add-on and power-cycle the dongle. It finds the real cloud
+again and the official app works; the Home Assistant controls stop working, since there is
+no local connection to send them on, and the sensors fall back to the dongle's own
+5-minute push.
 
 ---
 

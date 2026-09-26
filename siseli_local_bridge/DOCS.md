@@ -3,9 +3,9 @@
 Full reference for installing, configuring and troubleshooting the add-on.
 
 This page is rendered by Home Assistant on the add-on's **Documentation** tab, and is
-also readable [on GitHub](https://github.com/fadmaz/siseli-ha/blob/main/siseli_local_bridge/DOCS.md).
+also readable [on GitHub](https://github.com/siselilocal/siseli-ha/blob/main/siseli_local_bridge/DOCS.md).
 For what the add-on is and how it decodes telemetry, see the
-[project README](https://github.com/fadmaz/siseli-ha).
+[project README](https://github.com/siselilocal/siseli-ha).
 
 ## Contents
 
@@ -15,6 +15,7 @@ For what the add-on is and how it decodes telemetry, see the
 - [What you get](#what-you-get)
 - [Parallel inverters and battery banks](#parallel-inverters-and-battery-banks)
 - [Network setup](#network-setup)
+- [100% local mode](#100-local-mode)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -43,7 +44,7 @@ You will need that username and password in step 3.
 **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, then add:
 
 ```
-https://github.com/fadmaz/siseli-ha
+https://github.com/siselilocal/siseli-ha
 ```
 
 ### 3. Install and configure
@@ -158,7 +159,7 @@ opened a socket. You can ignore the `[CONFIG WARNING]` about it.
 
 ## What you get
 
-**207 sensors across 7 devices.** 143 are enabled on a fresh install; the rest are
+**205 sensors across 7 devices.** 144 are enabled on a fresh install; the rest are
 disabled by default and can be switched on individually in Home Assistant.
 
 | Device | Sensors | Covers |
@@ -296,6 +297,73 @@ Assistant host yourself. This works only if all three hold:
 > **A DNS override does not work.** Pointing the Siseli domain at Home Assistant produces
 > nothing, because there is no listener — the bridge observes traffic, it does not
 > terminate it. The inverter's connection simply fails.
+
+---
+
+## 100% local mode
+
+With `LOCAL_CLOUD_IP` set, the add-on stops relaying the dongle to the vendor cloud and
+**plays the vendor cloud itself** on a spare IP address of the Home Assistant host. The
+dongle never reaches the internet, the bridge requests a full reading on its own schedule,
+and the inverter's settings appear as Home Assistant controls. The official app shows the
+inverter offline for as long as this mode is on.
+
+### What it needs
+
+- The **Network IP Alias** add-on (in this repository), holding one free address on your
+  LAN — for example `192.168.1.200/24` on interface `end0` (Raspberry Pi with Home
+  Assistant OS) or `eth0`.
+- A fixed address for the WiFi dongle (DHCP reservation on your router), entered as
+  `INVERTER_IP`.
+- `AUTO_INTERCEPT` left on.
+
+### Options
+
+| Option | Default | Notes |
+|---|---|---|
+| `LOCAL_CLOUD_IP` | *(blank)* | The Network IP Alias address, without the `/24`. Blank keeps pass-through mode |
+| `LOCAL_CLOUD_PORT` | `1883` | Port of the built-in MQTT broker the dongle connects to. Keep the real cloud's port |
+| `HTTP_STUB_PORT` | `80` | Port of the built-in HTTP API that answers the dongle's boot-time check-in and broker lookup |
+| `HTTP_STUB_REAL_IPS` | `8.212.16.60` | The vendor's HTTP address. Some dongles call it directly without DNS; it is answered locally too |
+| `DNS_SPOOF_DOMAIN` | `broker.mqtt.solar.siseli.com,dtu.access.solar.siseli.com` | DNS names answered with `LOCAL_CLOUD_IP`. Keep both: without the second one the dongle connects but never sends telemetry |
+| `MQTT_BROKER_HOSTNAME` | `hongkong.broker.mqtt.solar.siseli.com` | The broker name the HTTP API hands the dongle. Must fall under `DNS_SPOOF_DOMAIN` |
+| `TELEMETRY_POLL_INTERVAL_SEC` | `0` | How often the bridge requests a full reading. `15` works well; `0` waits for the dongle's own push, about every five minutes |
+
+Keep `FORWARD_ALL_INVERTER_TRAFFIC` off in this mode.
+
+### Switching it on
+
+1. Start Network IP Alias, then set the options above and restart this add-on.
+2. **Power-cycle the WiFi dongle.** The DNS answers and the HTTP API only matter at boot;
+   until it restarts, the dongle stays on the real cloud.
+3. Entities refresh every `TELEMETRY_POLL_INTERVAL_SEC` seconds, and the controls appear
+   in the **Configuration** card of the main device.
+
+The bridge adds an nftables rule so that no other service on the host (the Mosquitto
+add-on, for example) answers on `LOCAL_CLOUD_IP`. Every restart of the add-on drops the
+rule for a moment: the dongle may then reach Mosquitto and be refused a few times in
+Mosquitto's log, which is harmless.
+
+### Controls
+
+Every control reads its value back from the inverter's own telemetry, so a refused or
+adjusted setting shows what the inverter really holds. The project README lists them
+with their manual programme numbers. Two cautions:
+
+- **Battery Type** can briefly cut the inverter's AC output, which also takes down Home
+  Assistant if the inverter powers it.
+- **BMS Lock Machine SOC** (programme 38) shuts the inverter down below it. The bridge
+  refuses a value at or above the current state of charge, and refuses it entirely while
+  **BMS Communication Normal** reads `No`, because the reported state of charge is then
+  the inverter's own estimate.
+
+Controls only work in this mode: they are sent on the local connection, which
+pass-through mode does not have.
+
+### Going back to pass-through
+
+Clear `LOCAL_CLOUD_IP` (set `FORWARD_ALL_INVERTER_TRAFFIC` to `true` if the dongle does
+not reconnect), restart the add-on and power-cycle the dongle.
 
 ---
 
