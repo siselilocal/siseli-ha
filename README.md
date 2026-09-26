@@ -203,6 +203,21 @@ The addresses below are **examples**; use your own.
 8. Within a minute the entities appear and refresh every 15 seconds. The controls are on
    the **Siseli Local Inverter 1** device, in its **Configuration** card.
 
+> **Tip — faster connection: redirect the two names in your router's DNS.** If your router
+> (or Pi-hole, AdGuard Home…) lets you add local DNS records, point these two names at the
+> local cloud address (`LOCAL_CLOUD_IP`, `192.168.1.200` in the example above):
+>
+> ```
+> hongkong.broker.mqtt.solar.siseli.com  ->  192.168.1.200
+> dtu.access.solar.siseli.com            ->  192.168.1.200
+> ```
+>
+> The dongle then gets the local address straight from the router, instead of the bridge
+> having to answer its DNS query faster than the router does. It connects sooner after a
+> power cut or a dongle reboot, and reconnects even if it happens to boot before the
+> add-on. **Remove these records before going back to pass-through**: while they exist,
+> the dongle cannot reach the real cloud whatever the add-on's settings.
+
 ### Controlling the inverter from Home Assistant
 
 Every control shows the value **read back from the inverter**, not the last value sent:
@@ -265,7 +280,8 @@ been tested in 100% local mode. Reports from other hardware are welcome.
 ### Going back to pass-through
 
 Clear `LOCAL_CLOUD_IP` (and set `FORWARD_ALL_INVERTER_TRAFFIC: true` if the dongle does
-not reconnect), restart the add-on and power-cycle the dongle. It finds the real cloud
+not reconnect), remove the router DNS records if you added them, restart the add-on and
+power-cycle the dongle. It finds the real cloud
 again and the official app works; the Home Assistant controls stop working, since there is
 no local connection to send them on, and the sensors fall back to the dongle's own
 5-minute push.

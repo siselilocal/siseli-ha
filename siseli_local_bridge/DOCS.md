@@ -339,6 +339,14 @@ Keep `FORWARD_ALL_INVERTER_TRAFFIC` off in this mode.
 3. Entities refresh every `TELEMETRY_POLL_INTERVAL_SEC` seconds, and the controls appear
    in the **Configuration** card of the main device.
 
+**Tip — faster connection.** If your router (or Pi-hole, AdGuard Home…) supports local
+DNS records, point `hongkong.broker.mqtt.solar.siseli.com` and
+`dtu.access.solar.siseli.com` at `LOCAL_CLOUD_IP`. The dongle then gets the local address
+from the router itself rather than depending on the bridge answering its DNS query first,
+so it connects sooner after a power cut and even if it boots before the add-on. Remove
+the records before going back to pass-through: while they exist the dongle cannot reach
+the real cloud.
+
 The bridge adds an nftables rule so that no other service on the host (the Mosquitto
 add-on, for example) answers on `LOCAL_CLOUD_IP`. Every restart of the add-on drops the
 rule for a moment: the dongle may then reach Mosquitto and be refused a few times in
@@ -363,7 +371,8 @@ pass-through mode does not have.
 ### Going back to pass-through
 
 Clear `LOCAL_CLOUD_IP` (set `FORWARD_ALL_INVERTER_TRAFFIC` to `true` if the dongle does
-not reconnect), restart the add-on and power-cycle the dongle.
+not reconnect), remove the router DNS records if you added them, restart the add-on and
+power-cycle the dongle.
 
 ---
 
