@@ -30,6 +30,8 @@ dongles are ever observed reconnecting in a loop or degrading after a long local
 cloud session, start here.
 """
 
+import base64
+import binascii
 import json
 import random
 import re
@@ -376,6 +378,13 @@ CONTROL_COMMANDS = {
     # official app -- always retried, never a real effect. This is the OLDER
     # format that worked once (2026-09-12) and still does when sent from here.
     "dual_output": {"on": "UERBVUxDMDGILw0=", "off": "UERBVUxDMDCYDg0="},
+    # ECO / power saving, manual Programme 08 -- NOT captured: the vendor app
+    # does not offer it. backlight and buzzer above decode to Voltronic PI30's
+    # own flag commands (PEx/PDx, PEa/PDa, CRC16/XMODEM), and PI30 assigns flag
+    # "j" to power saving, hence PEja\x1b\r / PDjR*\r. To be confirmed on the
+    # front panel (SdS = disabled, SEn = enabled). With it enabled the inverter
+    # may cut its output at low load on battery -- and it powers Home Assistant.
+    "eco": {"on": "UEVqYRsN", "off": "UERqUioN"},
 }
 _CLEAR_FAULT_CODE_CI = "RkFVTFRDR6YN"
 
@@ -386,6 +395,307 @@ _CLEAR_FAULT_CODE_CI = "RkFVTFRDR6YN"
 # dedup theory that _build_dev_rpc_request's docstring already found was false for
 # polls -- but for commands specifically, "i" does appear to matter.
 _CONTROL_RPC_ID = 503
+
+
+def _crc16_xmodem(data: bytes) -> bytes:
+    """CRC-16/XMODEM, big-endian, over `data` -- poly 0x1021, init 0.
+
+    Already used by pi30.py's `verify_frame` (there via binascii.crc_hqx directly);
+    reused here as the same algorithm, confirmed byte-for-byte against every raw
+    `ci` this bridge has actually captured from the vendor cloud: `PDAULC01` ->
+    `\\x88/`, `PDAULC00` -> `\\x98\\x0e`, and `FAULTC` alone -> `G\\xa6` (which is
+    exactly the "FAULTCG\\xa6" this bridge already sends as _CLEAR_FAULT_CODE_CI --
+    the trailing `G` in that capture was never part of the mnemonic, it is this
+    CRC's own high byte happening to be a printable ASCII letter). Cross-checked
+    against github.com/filipsworks/SoT-RWB1-Server-Emulator, an independent
+    reverse-engineering of the same RWB1 dongle protocol, which documents the same
+    polynomial for its own `build_write_ci`.
+    """
+    return binascii.crc_hqx(data, 0).to_bytes(2, "big")
+
+
+def build_write_ci(channel: str, value: str) -> str:
+    """base64("<CHANNEL><VALUE><CRC16><\\r>") -- a generic dev_rpc write command.
+
+    Every confirmed command so far (backlight/buzzer's `P<state><id>`, dual
+    output's `PDAULC0<n>`, clear fault's `FAULTC`) fits this one shape: an ASCII
+    channel/value string, this frame's CRC16, then a trailing CR. Those four stay
+    hardcoded in CONTROL_COMMANDS/_CLEAR_FAULT_CODE_CI as captured bytes, since
+    they already work; this builder is for NEW channels this bridge has not
+    captured from a real cloud session, only ported from SoT-RWB1-Server-
+    Emulator's independent reverse engineering (see
+    protocole-cloud-dongle/README.md and the write-commands project memory) --
+    each one wired through here should stay unverified-on-our-hardware until a
+    physical effect (or, where available, a matching telemetry change) confirms
+    it.
+    """
+    frame = f"{channel}{value}".encode("ascii")
+    frame += _crc16_xmodem(frame)
+    frame += b"\r"
+    return base64.b64encode(frame).decode("ascii")
+
+
+#: Select-style settings ported from SoT-RWB1-Server-Emulator's
+#: SELECT_SETTING_DEFINITIONS (github.com/filipsworks/SoT-RWB1-Server-Emulator,
+#: custom_components/sot_rwb1/const.py). Deliberately starting with exactly one,
+#: the lowest-risk of the three that source lists: an ordinary operating-mode
+#: toggle already exposed in the vendor app (not a voltage/current/SOC setpoint
+#: that could misconfigure the battery), instantly reversible, and independently
+#: readable back afterwards from this bridge's own telemetry -- planned to be
+#: PI30's pi30_output_source_priority, but this inverter does not speak PI30
+#: (see the write-commands project memory), so that check never applied here;
+#: confirmed instead by the user directly reading the inverter's own front
+#: panel after a write (2026-09-23) -- cheap to notice and cheap to undo either
+#: way.
+#:
+#: The source's own warning said the dongle-side encoding for POP0 (SBU=0,
+#: SUB=1) is NOT the same ordering as the Siseli cloud API's enum for the same
+#: setting. Physical test on our inverter (2026-09-23) found the dongle-side
+#: encoding itself inverted from what that source documented for POP0: sending
+#: "1" (its "SUB") made the front panel show SBU, and "0" (its "SBU") showed
+#: SUB -- corrected below to match what our inverter actually does.
+#:
+#: charger_priority (PCP0) and grid_working_range (PGR0) carry the source's
+#: documented values UNCHANGED -- given POP0 was wrong, these should be
+#: treated as equally unverified until confirmed the same way (front panel
+#: after each write), not assumed correct because the channel/CRC mechanism
+#: itself is now proven.
+SELECT_SETTINGS = {
+    "output_source_priority": {
+        "channel": "POP0",
+        "options": {
+            "solar_battery_first": "1",  # SBU (confirmed on our inverter's front panel)
+            "solar_first": "0",  # SUB (confirmed on our inverter's front panel)
+        },
+    },
+    "charger_priority": {
+        "channel": "PCP0",
+        # Corrected 2026-09-23: the user read the inverter's own front panel
+        # after each option and found the source's documented values (OSO=0,
+        # CSO=1, SNU=2, SOR=3) rotated by one on this hardware -- sending "0"
+        # showed CSO, "1" showed SNU, "2" showed OSO. Values below are what
+        # actually produces each label on THIS inverter. "Solar Residual"
+        # (SOR) has no entry at all: the user confirmed this priority mode
+        # does not exist on their unit ("absent dans mon onduleur"), so it is
+        # dropped rather than left in as a non-functional choice -- same
+        # reasoning as output_source_priority only exposing 2 of the source's
+        # documented options.
+        "options": {
+            "solar_only": "2",  # OSO (confirmed on our inverter's front panel)
+            "solar_and_utility": "0",  # CSO (confirmed on our inverter's front panel)
+            "solar_first": "1",  # SNU (confirmed on our inverter's front panel)
+        },
+    },
+    "grid_working_range": {
+        "channel": "PGR0",
+        # Corrected 2026-09-24: a real capture (tcpdump on end0, LOCAL_CLOUD_IP
+        # disabled + FORWARD_ALL_INVERTER_TRAFFIC=true so the dongle talked to
+        # the real vendor cloud) caught the official app itself sending both
+        # values -- user activated APL then UPS 2s later, and the wire showed
+        # "PGR00" (APL) then "PGR01" (UPS): the source's documented SBU-style
+        # mapping (UPS=0, APL=1) was inverted for this channel too, same class
+        # of bug as output_source_priority. CRC16/XMODEM("PGR00")=0x29EB and
+        # ("PGR01")=0x39CA both match the captured bytes exactly, confirming
+        # the channel name and framing. The sequence ended on UPS and
+        # telemetry (mains_input_range_code) read "11" (UPS) afterwards,
+        # consistent with success; no telemetry snapshot exists for the brief
+        # 9s spent on APL (well under the ~5min spontaneous push cycle), so
+        # that leg rests on the app's own wire evidence rather than a
+        # confirmed state change. Values below match the captured app
+        # behavior, not the source's documented mapping.
+        "options": {
+            "ups": "1",  # confirmed by capture of the vendor app's own traffic, 2026-09-24
+            "appliance": "0",  # APL -- confirmed by capture of the vendor app's own traffic, 2026-09-24
+        },
+    },
+    "solar_supply_priority": {
+        # New channel, not in SoT-RWB1-Server-Emulator's spec at all -- found
+        # entirely from a capture of the vendor app's own traffic (2026-09-24,
+        # same method as grid_working_range's fix), not ported from anywhere.
+        # "PVENGUSE" + a 2-digit code, CRC16/XMODEM-verified byte-for-byte on
+        # both captured frames (PVENGUSE01 -> 0x4E40 "N@", PVENGUSE00 ->
+        # 0x5E61 "^a"). The app's own labels are "BLU" and "LBU" -- how PV
+        # energy is allocated (Battery/Load/Utility ordering), distinct from
+        # output_source_priority (which source powers the load) and
+        # charger_priority (which source charges the battery). User activated
+        # BLU then LBU 2s later; the capture showed "00" then "01" in that
+        # order.
+        "channel": "PVENGUSE",
+        "options": {
+            "blu": "00",  # confirmed by capture of the vendor app's own traffic, 2026-09-24
+            "lbu": "01",  # confirmed by capture of the vendor app's own traffic, 2026-09-24
+        },
+    },
+    "output_voltage": {
+        # Manual Programme 10. Not offered by the vendor app, so not captured:
+        # Voltronic's PI30 protocol documents "V<nnn>" (220/230/240 on HV
+        # models), the same family as POP/PCP/PGR/PBT above, all confirmed on
+        # this inverter. Read back from output_set_voltage (93VQ config pack
+        # tail), which the 2026-09-26 factory reset moved 240 -> 230.
+        "channel": "V",
+        "options": {
+            "220": "220",
+            "230": "230",
+            "240": "240",
+        },
+    },
+    "max_utility_charge_current": {
+        # Manual Programme 11 (2 A, then 10 A up in steps of 10). Not offered by
+        # the vendor app: PI30 documents "MUCHGC<m><nn>", m = parallel machine
+        # number (0 on a single unit), nn = amps. Stops at 90 A because above
+        # 99 A the documented format changes to nnn, which cannot be checked
+        # here. Read back from max_utility_charge_current (93VQ token 2), which
+        # the 2026-09-26 factory reset moved 2 -> 30.
+        "channel": "MUCHGC",
+        "options": {f"{a}": f"0{a:02d}" for a in (2, 10, 20, 30, 40, 50, 60, 70, 80, 90)},
+    },
+    "battery_type": {
+        # Manual Programme 05. Captured from the vendor app 2026-09-26:
+        # "PBT04" (Pylontech) then "PBT06" (Growatt), CRC16/XMODEM 0x678A /
+        # 0x47C8 matching the wire byte-for-byte, each answered "(ACK9" and
+        # read back by the next HEEP1 as 93VQ code 4 then 6. The other eight
+        # codes are NOT captured: they follow the manual's option order, which
+        # both captured codes fit. Exposed on the user's explicit request.
+        #
+        # Caution: on this installation a battery type change once cut the
+        # inverter's AC output, which powers Home Assistant itself (2026-09-25).
+        # PYL also raises warning 61 (BMS communication lost) with this BMS and
+        # makes the SOC read 99-100 %.
+        "channel": "PBT0",
+        "options": {
+            "agm": "0",
+            "flooded": "1",
+            "user_defined": "2",
+            "lia": "3",
+            "pylontech": "4",  # confirmed by capture of the vendor app's own traffic, 2026-09-26
+            "techfine": "5",
+            "growatt": "6",  # confirmed by capture of the vendor app's own traffic, 2026-09-26
+            "felicity": "7",
+            "lib": "8",
+            "third_party_lithium": "9",
+        },
+    },
+}
+
+
+#: Number-style settings: BMS SOC thresholds, manual Programmes 38-41.
+#: Captured from the vendor app 2026-09-26
+#: (captures/2026-09-26_real-cloud_prog38-41-soc.pcap): channel + 3-digit
+#: percent ("BMSSDC015"), each accepted value answered "(ACK9" and read back by
+#: the next HEEP1 at the listed 93VQ position; the inverter's own front panel
+#: showed the same values. The inverter only accepts multiples of 5 (every
+#: other value got "(NAKss"), and raising Programme 38 also raised 39 (and
+#: Programme 62, dual output SOC) on its own to keep them 5 points above it.
+#: Ranges are SoT-RWB1-Server-Emulator's, narrowed to the multiples of 5.
+NUMBER_SETTINGS = {
+    "bms_lock_machine_soc": {  # Programme 38 -- the inverter SHUTS DOWN below it
+        "channel": "BMSSDC", "min": 5, "max": 95, "step": 5,
+    },
+    "bms_restore_mains_charging_soc": {  # Programme 39
+        "channel": "BMSB2UC", "min": 5, "max": 95, "step": 5,
+    },
+    "bms_restore_battery_discharging_soc": {  # Programme 40
+        "channel": "BMSU2BC", "min": 5, "max": 95, "step": 5,
+    },
+    "bms_inverter_startup_soc": {  # Programme 41
+        "channel": "BMSSRC", "min": 5, "max": 100, "step": 5,
+    },
+    # Programmes 12 and 13 (48 V ranges from the manual, 1 V steps): battery
+    # voltage at which SBU priority goes back to the grid, and back to the
+    # battery. Not offered by the vendor app: PI30 documents PBCV<nn.n> and
+    # PBDV<nn.n> (SoT-RWB1-Server-Emulator uses the same channel names). Read
+    # back from dHrK tokens 4 and 5, which the 2026-09-26 factory reset moved
+    # 44 -> 46 and 48 -> 54. Programme 13's "battery full" option (00.0) is
+    # left out.
+    "back_to_grid_voltage": {
+        "channel": "PBCV", "min": 44, "max": 51, "step": 1, "format": "{:04.1f}", "unit": "V",
+    },
+    "back_to_battery_voltage": {
+        "channel": "PBDV", "min": 48, "max": 58, "step": 1, "format": "{:04.1f}", "unit": "V",
+    },
+    # Programme 31, battery equalization voltage: 48.0-60.0 V in 0.1 V steps on
+    # 48 V units (manual). PI30 documents PBEQV<nn.nn>. Only acts with a
+    # Flooded / User-defined battery type and equalization enabled (Programme
+    # 30). Read back from dHrK token 7, moved 56.0 -> 58.4 by the factory reset.
+    "equalization_voltage": {
+        "channel": "PBEQV", "min": 48.0, "max": 60.0, "step": 0.1, "format": "{:05.2f}", "unit": "V",
+    },
+}
+
+
+def _lock_machine_refusal(value: int) -> Optional[str]:
+    """Programme 38 turns the inverter off when the SOC is below it, and on this
+    installation the inverter powers Home Assistant itself. Refuse any value at
+    or above the current SOC, and refuse outright while the SOC cannot be
+    trusted (BMS communication lost or never decoded: the inverter's own
+    estimate then reads 99-100 % whatever the real charge)."""
+    from . import state as _shared_state
+
+    snapshot = _shared_state.snapshot_state()
+    if snapshot.get("bms_communication_normal") != "Yes":
+        return "BMS communication not confirmed, SOC cannot be trusted"
+    soc = snapshot.get("bat_cap")
+    if not isinstance(soc, (int, float)):
+        return "current SOC unknown"
+    if value >= soc:
+        return f"{value} % is not below the current SOC ({soc} %): the inverter would shut down"
+    return None
+
+
+def send_control_number(setting: str, value: float) -> bool:
+    """Write one NUMBER_SETTINGS value. Returns False (logged) when the value is
+    out of range, not a multiple of the step, refused by the programme 38 guard,
+    or when there is no local-cloud connection."""
+    definition = NUMBER_SETTINGS.get(setting)
+    if definition is None:
+        log(f"[CONTROL] unknown number setting {setting!r}", level="error")
+        return False
+    step = definition["step"]
+    if isinstance(step, float):
+        # Decimal settings (e.g. 0.1 V): snap to the grid, refuse anything off it.
+        n = round((value - definition["min"]) / step)
+        on_grid = abs(definition["min"] + n * step - value) < 1e-6
+        value = round(definition["min"] + n * step, 2)
+    else:
+        on_grid = value == int(value) and int(value) % step == 0
+        if value == int(value):
+            value = int(value)
+    if not on_grid or not definition["min"] <= value <= definition["max"]:
+        log(
+            f"[CONTROL] {setting}: {value} refused, must be {definition['min']}-{definition['max']} "
+            f"in steps of {definition['step']} (the inverter NAKs anything else)",
+            level="warning",
+        )
+        return False
+    if setting == "bms_lock_machine_soc":
+        refusal = _lock_machine_refusal(value)
+        if refusal:
+            log(f"[CONTROL] {setting}: {value} refused -- {refusal}", level="warning")
+            return False
+    ok = _send_control_ci(build_write_ci(definition["channel"], definition.get("format", "{:03d}").format(value)))
+    if ok:
+        log(f"[CONTROL] {setting} -> {value}")
+    return ok
+
+
+def send_control_select(setting: str, option: str) -> bool:
+    """Write one option of a SELECT_SETTINGS entry. Same success signal caveat
+    as send_control_switch: the dongle's dev_rpc_reply carries no field this
+    bridge has confirmed means success/failure, so "the send happened" is all
+    that is reported."""
+    definition = SELECT_SETTINGS.get(setting)
+    if definition is None:
+        log(f"[CONTROL] unknown select setting {setting!r}", level="error")
+        return False
+    value = definition["options"].get(option)
+    if value is None:
+        log(f"[CONTROL] unknown option {option!r} for select setting {setting!r}", level="error")
+        return False
+    ci = build_write_ci(definition["channel"], value)
+    ok = _send_control_ci(ci)
+    if ok:
+        log(f"[CONTROL] {setting} -> {option}")
+    return ok
 
 
 def _first_established_connection() -> Optional[tcpstack.Connection]:

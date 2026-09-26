@@ -41,7 +41,7 @@ class TestNoFabricatedValues(_ParserTestCase):
         state = SolarParser._try_ascii_schema({"Yavb": captures.BLOCK_YAVB_CHARGING})
 
         for key in (
-            "bms_allow_charging_flag", "bms_allow_discharge_flag", "bms_communication_normal",
+            "bms_allow_charging_flag", "bms_allow_discharge_flag",
             "bms_communication_control_function", "bms_charging_overcurrent_sign",
             "bms_discharge_overcurrent_flag", "bms_low_battery_alarm_flag",
             "bms_low_power_fault_flag", "bms_low_temperature_flag",
@@ -52,6 +52,8 @@ class TestNoFabricatedValues(_ParserTestCase):
 
         # The raw bit word is the honest artefact and is still published.
         self.assertEqual(state["yavb_flags_raw"], "1001100000000000")
+        # Its first bit alone is decoded: BMS communication, proven by captures.
+        self.assertEqual(state["bms_communication_normal"], "Yes")
         self.assertEqual(state["bms_current_soc"], 58)
         self.assertEqual(state["bms_charging_current_a"], 29.1)
 
@@ -180,6 +182,82 @@ class TestSingleWriterPerKey(_ParserTestCase):
         self.assertEqual(summary["bms_cell_delta_mv"], 7)
 
 
+SUMMARY_KEYS = ("bms_max_cell_mv", "bms_max_cell_pos", "bms_min_cell_mv",
+                "bms_min_cell_pos", "bms_cell_delta_mv")
+
+
+class TestCellSummaryFallback(_ParserTestCase):
+    """With one battery type the inverter's uxJp carries the cell summary and v09K is a
+    frozen copy; with the other v09K is live and the four summary tokens read 0000. The
+    zeros used to be published as 0 mV, position 0 and delta 0."""
+
+    def _state(self, uxjp, v09k=None):
+        blocks = {"uxJp": uxjp}
+        if v09k is not None:
+            blocks["v09K"] = v09k
+        return SolarParser._try_ascii_schema(blocks)
+
+    def test_a_zero_summary_falls_back_to_the_cell_list_of_the_same_payload(self):
+        state = self._state(captures.SYNTH_UXJP_ZERO_SUMMARY, captures.SYNTH_V09K_CELLS_LIVE)
+        self.assertEqual(state["bms_max_cell_mv"], 3342)
+        self.assertEqual(state["bms_max_cell_pos"], 2)
+        self.assertEqual(state["bms_min_cell_mv"], 3339)
+        self.assertEqual(state["bms_min_cell_pos"], 12)
+        self.assertEqual(state["bms_cell_delta_mv"], 3)
+        # The rest of uxJp is unaffected.
+        self.assertEqual(state["bms_remaining_ah"], 99.2)
+        self.assertEqual(state["bms_nominal_ah"], 100.0)
+
+    def test_a_zero_summary_without_cells_publishes_nothing_rather_than_zeros(self):
+        state = self._state(captures.SYNTH_UXJP_ZERO_SUMMARY)
+        for key in SUMMARY_KEYS:
+            with self.subTest(key=key):
+                self.assertNotIn(key, state)
+        self.assertEqual(state["bms_remaining_ah"], 99.2)
+
+    def test_a_usable_bms_summary_wins_over_the_cell_list(self):
+        state = self._state(captures.BLOCK_UXJP_BMS_CAPACITY, captures.BLOCK_V09K_CELLS_16)
+        self.assertEqual(state["bms_max_cell_mv"], 3327)
+        self.assertEqual(state["bms_max_cell_pos"], 9)
+        self.assertEqual(state["bms_min_cell_mv"], 3320)
+        self.assertEqual(state["bms_min_cell_pos"], 32)
+        self.assertEqual(state["bms_cell_delta_mv"], 7)
+
+    def test_half_a_summary_is_unusable_and_the_halves_are_not_mixed(self):
+        state = self._state(captures.SYNTH_UXJP_HALF_SUMMARY, captures.SYNTH_V09K_CELLS_LIVE)
+        self.assertEqual(state["bms_max_cell_mv"], 3342)  # from the cells, not the 3342 token
+        self.assertEqual(state["bms_min_cell_mv"], 3339)
+        self.assertEqual(state["bms_min_cell_pos"], 12)
+        self.assertEqual(state["bms_cell_delta_mv"], 3)
+
+    def test_a_single_cell_is_not_a_summary(self):
+        state = self._state(captures.SYNTH_UXJP_ZERO_SUMMARY, b"(3321 00000000\r")
+        for key in SUMMARY_KEYS:
+            with self.subTest(key=key):
+                self.assertNotIn(key, state)
+
+    def test_on_a_tie_the_first_cell_is_reported(self):
+        state = self._state(captures.SYNTH_UXJP_ZERO_SUMMARY, b"(3341 3341 3341 00000000\r")
+        self.assertEqual(state["bms_max_cell_pos"], 1)
+        self.assertEqual(state["bms_min_cell_pos"], 1)
+        self.assertEqual(state["bms_cell_delta_mv"], 0)
+
+    def test_only_the_leading_run_of_valid_cells_counts(self):
+        """The list stops at the collapsed third cell, so the two cells after it must not
+        enter the summary either."""
+        state = self._state(captures.SYNTH_UXJP_ZERO_SUMMARY, captures.SYNTH_V09K_CELL_3_COLLAPSED)
+        self.assertEqual(state["bms_cell_count"], 2)
+        self.assertEqual(state["bms_max_cell_mv"], 3321)
+        self.assertEqual(state["bms_min_cell_mv"], 3321)
+        self.assertEqual(state["bms_cell_delta_mv"], 0)
+
+    def test_the_cell_list_alone_still_writes_no_summary(self):
+        state = SolarParser._try_ascii_schema({"v09K": captures.SYNTH_V09K_CELLS_LIVE})
+        for key in SUMMARY_KEYS:
+            with self.subTest(key=key):
+                self.assertNotIn(key, state)
+
+
 class TestNoQuantityIsRelabelledAsAnother(_ParserTestCase):
     """Each of these published one quantity under the name of a different one. They
     are not missing decodes -- they were wrong ones, which is worse, because a wrong
@@ -219,9 +297,9 @@ class TestNoDecodeIsPinnedToOneDeviceConfiguration(_ParserTestCase):
     """A guard that only passes on the reference device is a memorised constant."""
 
     SETTINGS = (
-        "ac_charging_switch", "charging_priority_order", "working_mode", "eco",
-        "dual_output_mode", "does_machine_have_output", "grid_connection_function",
-        "input_source_prompt_function", "output_set_voltage",
+        "mains_input_range", "charging_priority_order", "battery_type", "eco",
+        "does_machine_have_output", "grid_connection_function",
+        "solar_supply_priority", "output_set_voltage",
     )
 
     def _decode(self, tail):
@@ -250,10 +328,294 @@ class TestNoDecodeIsPinnedToOneDeviceConfiguration(_ParserTestCase):
 
     def test_the_reference_values_are_unchanged(self):
         state = self._decode("230")
-        self.assertEqual(state["working_mode"], "SBU")
+        self.assertEqual(state["battery_type"], "LIA protocol (LIA)")
         self.assertEqual(state["charging_priority_order"], "SNU")
-        self.assertEqual(state["ac_charging_switch"], "Close")
+        self.assertEqual(state["mains_input_range"], "UPS")
         self.assertEqual(state["grid_connection_function"], "Off")
+
+
+class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
+    """Real HEEP1 replies (93VQ) and WdRR blocks from 2026-09-25, same inverter,
+    before and after the vendor app switched UPS -> APL (PGR01 -> PGR00)."""
+
+    VQ_UPS = b"(1 060 002 10611110240 002 0 1 1 0 1 015 020 030 025 056.4 056.4 042.0 005 0 0 \r"
+    VQ_APL = b"(1 060 002 00611110240 002 0 1 1 0 1 015 020 030 025 056.4 056.4 042.0 005 0 0 \r"
+    WDRR_UPS = b"(000.0 00.0 280 170 65 40 +00000 0 12000 11+00000\r"
+    WDRR_APL = b"(000.0 00.0 280 090 70 40 +00000 0 12000 11+00000\r"
+
+    def test_config_pack_first_digit_is_the_range(self):
+        self.assertEqual(SolarParser._try_ascii_schema({"93VQ": self.VQ_UPS})["mains_input_range"], "UPS")
+        self.assertEqual(SolarParser._try_ascii_schema({"93VQ": self.VQ_APL})["mains_input_range"], "Appliance (APL)")
+
+    def test_wdrr_code_is_raw_only(self):
+        """WdRR's "11" is identical under UPS and APL, so it must not name a range."""
+        for block in (self.WDRR_UPS, self.WDRR_APL):
+            state = SolarParser._try_ascii_schema({"WdRR": block})
+            self.assertEqual(state["mains_input_range_code"], "11")
+            self.assertNotIn("mains_input_range", state)
+
+    def test_settings_toggled_one_at_a_time(self):
+        """Real HEEP1 replies from one capture, vendor app changing a single setting
+        before each refresh: buzzer On/Off, backlight On/Off, battery PYL/GRO."""
+        replies = {
+            "start":        (b"00611110240", b"0 0", "Off", "Off", "Growatt (GRO)"),
+            "buzzer on":    (b"00611110240", b"1 0", "On", "Off", "Growatt (GRO)"),
+            "backlight on": (b"00611110240", b"0 1", "Off", "On", "Growatt (GRO)"),
+            "pylontech":    (b"00411110240", b"0 0", "Off", "Off", "Pylontech (PYL)"),
+        }
+        for label, (pack, tokens, buzzer, backlight, battery) in replies.items():
+            with self.subTest(label):
+                block = b"(1 060 002 " + pack + b" 002 " + tokens + b" 1 0 1 015 020 030 025 056.4 056.4 042.0 005 0 0 \r"
+                state = SolarParser._try_ascii_schema({"93VQ": block})
+                self.assertEqual(state["buzzer_function"], buzzer)
+                self.assertEqual(state["lcd_back_lighting"], backlight)
+                self.assertEqual(state["battery_type"], battery)
+                self.assertNotIn("automatic_return_to_first_page", state)
+                self.assertNotIn("working_mode", state)
+
+    def test_battery_type_writes_are_the_captured_bytes(self):
+        """The vendor app's own frames, 2026-09-26."""
+        import base64
+        from src.siseli_local_bridge import fakecloud
+        channel = fakecloud.SELECT_SETTINGS["battery_type"]["channel"]
+        options = fakecloud.SELECT_SETTINGS["battery_type"]["options"]
+        for key, wire in (("pylontech", b"PBT04g\x8a\r"), ("growatt", b"PBT06G\xc8\r")):
+            with self.subTest(key):
+                ci = fakecloud.build_write_ci(channel, options[key])
+                self.assertEqual(base64.b64decode(ci), wire)
+
+    def test_battery_type_select_labels_are_the_decoded_values(self):
+        """Every option must be a value the parser can publish, or the read-back
+        would never match; and every code 0-9 must map back to its own option."""
+        from src.siseli_local_bridge import fakecloud, mqtt
+        _, _, options = mqtt._CONTROL_SELECTS["battery_type"]
+        codes = fakecloud.SELECT_SETTINGS["battery_type"]["options"]
+        for label, key in options.items():
+            with self.subTest(label):
+                block = b"(1 060 002 10" + codes[key].encode() + b"11110240 002 0 0 1 0 1 015 020 030 025 056.4 056.4 042.0 005 0 0 \r"
+                state = SolarParser._try_ascii_schema({"93VQ": block})
+                self.assertEqual(state["battery_type"], label)
+        self.assertEqual(sorted(codes.values()), [str(n) for n in range(10)])
+
+    def test_bms_communication_follows_the_first_yavb_flag(self):
+        """Yavb from 2026-09-26: communication up, BMS cable unplugged, battery
+        type set to PYL (which this BMS does not speak)."""
+        cases = {
+            "up": (b"(04 1001100000000000 042.0 056.0 100.0 044 0020.2 0000.0 03021 000000\r", "Yes"),
+            "cable unplugged": (b"(04 0001100000000000 042.0 056.0 100.0 048 0005.7 0000.0 03021 000000\r", "No"),
+            "PYL": (b"(00 0001100000000000 040.0 056.8 200.0 100 0000.0 0000.0 02731 000000\r", "No"),
+        }
+        for label, (block, expected) in cases.items():
+            with self.subTest(label):
+                state = SolarParser._try_ascii_schema({"Yavb": block})
+                self.assertEqual(state["bms_communication_normal"], expected)
+
+    def test_soc_threshold_writes_are_the_captured_bytes(self):
+        """Frames the vendor app sent and the inverter ACKed, 2026-09-26."""
+        import base64
+        from src.siseli_local_bridge import fakecloud
+        captured = {
+            "bms_lock_machine_soc": (15, b"BMSSDC015M\xb2\r"),
+            "bms_restore_mains_charging_soc": (25, b"BMSB2UC025\xb4)\r"),
+            "bms_restore_battery_discharging_soc": (30, b"BMSU2BC030\x9a\x0c\r"),
+            "bms_inverter_startup_soc": (20, b"BMSSRC020\x81\x9b\r"),
+        }
+        for setting, (value, wire) in captured.items():
+            with self.subTest(setting):
+                channel = fakecloud.NUMBER_SETTINGS[setting]["channel"]
+                self.assertEqual(base64.b64decode(fakecloud.build_write_ci(channel, f"{value:03d}")), wire)
+
+    def test_soc_threshold_values_the_inverter_would_nak_are_not_sent(self):
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        with mock.patch.object(fakecloud, "_send_control_ci", return_value=True) as send:
+            for value in (14, 16, 21, 0, 100, 22.5):
+                with self.subTest(value=value):
+                    self.assertFalse(fakecloud.send_control_number("bms_restore_mains_charging_soc", value))
+            self.assertTrue(fakecloud.send_control_number("bms_restore_mains_charging_soc", 20))
+            self.assertTrue(fakecloud.send_control_number("bms_inverter_startup_soc", 100))
+            self.assertEqual(send.call_count, 2)
+
+    def test_lock_machine_soc_never_reaches_the_current_soc(self):
+        """Programme 38 shuts the inverter down below it -- and the inverter powers
+        Home Assistant. Refused at or above the SOC, or when the SOC is not trusted."""
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        cases = [
+            ({"bms_communication_normal": "Yes", "bat_cap": 55}, 50, True),
+            ({"bms_communication_normal": "Yes", "bat_cap": 55}, 55, False),
+            ({"bms_communication_normal": "Yes", "bat_cap": 55}, 60, False),
+            ({"bms_communication_normal": "No", "bat_cap": 100}, 15, False),
+            ({"bat_cap": 55}, 15, False),
+            ({"bms_communication_normal": "Yes"}, 15, False),
+        ]
+        for snapshot, value, expected in cases:
+            with self.subTest(snapshot=snapshot, value=value), \
+                    mock.patch.object(fakecloud, "_send_control_ci", return_value=True), \
+                    mock.patch("src.siseli_local_bridge.state.snapshot_state", return_value=snapshot):
+                self.assertIs(fakecloud.send_control_number("bms_lock_machine_soc", value), expected)
+
+    def test_soc_numbers_read_back_the_front_panel_positions(self):
+        """93VQ tokens 10-13 = Programmes 38-41, checked against the panel
+        (15/25/30/20 on both, 2026-09-26)."""
+        from src.siseli_local_bridge import mqtt
+        from src.siseli_local_bridge.sensors import SENSORS
+        block = b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 005 0 0 \r"
+        state = SolarParser._try_ascii_schema({"93VQ": block})
+        expected = {
+            "bms_lock_machine_soc": ("bms_low_power_soc", 15),
+            "bms_restore_mains_charging_soc": ("bms_returns_to_mains_mode_soc", 25),
+            "bms_restore_battery_discharging_soc": ("bms_returns_to_battery_mode_soc", 30),
+            "bms_inverter_startup_soc": ("bms_auto_start_soc_after_low", 20),
+        }
+        for setting, (key, value) in expected.items():
+            with self.subTest(setting):
+                self.assertIn(setting, mqtt._CONTROL_NUMBERS)
+                self.assertIn(key, SENSORS)
+                self.assertEqual(state[key], value)
+                self.assertIn(key, mqtt._CONTROL_TELEMETRY_STATE[setting]["value_template"])
+
+    def test_eco_follows_the_pi30_flag_family_of_the_captured_commands(self):
+        """backlight/buzzer are PI30's PEx/PDx and PEa/PDa; ECO uses flag j."""
+        import base64
+        import binascii
+        from src.siseli_local_bridge import fakecloud, mqtt
+        expect = {
+            ("backlight", "on"): b"PEx", ("backlight", "off"): b"PDx",
+            ("buzzer", "on"): b"PEa", ("buzzer", "off"): b"PDa",
+            ("eco", "on"): b"PEj", ("eco", "off"): b"PDj",
+        }
+        for (setting, state), mnemonic in expect.items():
+            with self.subTest(setting=setting, state=state):
+                frame = base64.b64decode(fakecloud.CONTROL_COMMANDS[setting][state])
+                self.assertEqual(frame, mnemonic + binascii.crc_hqx(mnemonic, 0).to_bytes(2, "big") + b"\r")
+        self.assertIn("eco", mqtt._CONTROL_SWITCHES)
+        self.assertNotIn("eco", mqtt._CONTROL_TELEMETRY_STATE)  # optimistic until panel-checked
+
+    def test_output_voltage_is_the_pi30_v_command_with_read_back(self):
+        import base64
+        import binascii
+        from src.siseli_local_bridge import fakecloud, mqtt
+        d = fakecloud.SELECT_SETTINGS["output_voltage"]
+        for volts in ("220", "230", "240"):
+            with self.subTest(volts):
+                frame = base64.b64decode(fakecloud.build_write_ci(d["channel"], d["options"][volts]))
+                body = b"V" + volts.encode()
+                self.assertEqual(frame, body + binascii.crc_hqx(body, 0).to_bytes(2, "big") + b"\r")
+        _, _, options = mqtt._CONTROL_SELECTS["output_voltage"]
+        # value_template renders "<output_set_voltage> V"; every option must be reachable
+        block = b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 005 0 0 \r"
+        state = SolarParser._try_ascii_schema({"93VQ": block})
+        self.assertIn(f"{state['output_set_voltage']} V", options)
+        self.assertEqual(set(options.values()), set(d["options"]))
+
+    def test_max_utility_charge_current_is_muchgc_with_read_back(self):
+        import base64
+        import binascii
+        from src.siseli_local_bridge import fakecloud, mqtt
+        d = fakecloud.SELECT_SETTINGS["max_utility_charge_current"]
+        for amps, body in (("2", b"MUCHGC002"), ("30", b"MUCHGC030"), ("90", b"MUCHGC090")):
+            with self.subTest(amps):
+                frame = base64.b64decode(fakecloud.build_write_ci(d["channel"], d["options"][amps]))
+                self.assertEqual(frame, body + binascii.crc_hqx(body, 0).to_bytes(2, "big") + b"\r")
+        _, _, options = mqtt._CONTROL_SELECTS["max_utility_charge_current"]
+        self.assertEqual(set(options.values()), set(d["options"]))
+        for block, amps in ((b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 005 0 0 \r", 2),
+                            (b"(1 060 030 13610110230 012 0 1 0 0 1 015 025 030 020 056.4 056.4 042.0 020 0 0 \r", 30)):
+            state = SolarParser._try_ascii_schema({"93VQ": block})
+            self.assertEqual(state["max_utility_charge_current_a"], amps)
+            self.assertIn(f"{amps} A", options)
+        self.assertIn("max_utility_charge_current_a", mqtt._CONTROL_TELEMETRY_STATE["max_utility_charge_current"]["value_template"])
+
+    def test_back_to_grid_and_battery_voltages_are_pbcv_pbdv_with_read_back(self):
+        import binascii
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt
+        sent = []
+        with mock.patch.object(fakecloud, "_send_control_ci", side_effect=lambda ci: sent.append(ci) or True):
+            self.assertTrue(fakecloud.send_control_number("back_to_grid_voltage", 44))
+            self.assertTrue(fakecloud.send_control_number("back_to_battery_voltage", 48.0))
+            self.assertFalse(fakecloud.send_control_number("back_to_grid_voltage", 52))
+            self.assertFalse(fakecloud.send_control_number("back_to_battery_voltage", 47))
+        import base64
+        for ci, body in zip(sent, (b"PBCV44.0", b"PBDV48.0")):
+            self.assertEqual(base64.b64decode(ci), body + binascii.crc_hqx(body, 0).to_bytes(2, "big") + b"\r")
+        # dHrK before / after the 2026-09-26 factory reset
+        for block, grid, batt in ((b"(0 044.0 020 044.0 044.0 048.0 0 056.0 060 120 030 0000 0000 05 0000 52.0 25975\r", 44.0, 48.0),
+                                  (b"(1 044.0 020 044.0 046.0 054.0 0 058.4 060 120 030 0000 0000 05 0000 52.0 50000\r", 46.0, 54.0)):
+            state = SolarParser._try_ascii_schema({"dHrK": block})
+            self.assertEqual(state["return_to_mains_mode_voltage_v"], grid)
+            self.assertEqual(state["return_to_battery_mode_voltage_v"], batt)
+        self.assertIn("return_to_mains_mode_voltage_v", mqtt._CONTROL_TELEMETRY_STATE["back_to_grid_voltage"]["value_template"])
+        self.assertIn("return_to_battery_mode_voltage_v", mqtt._CONTROL_TELEMETRY_STATE["back_to_battery_voltage"]["value_template"])
+
+    def test_equalization_voltage_is_pbeqv_with_decimal_steps(self):
+        import base64
+        import binascii
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt
+        sent = []
+        with mock.patch.object(fakecloud, "_send_control_ci", side_effect=lambda ci: sent.append(ci) or True):
+            self.assertTrue(fakecloud.send_control_number("equalization_voltage", 56.0))
+            self.assertTrue(fakecloud.send_control_number("equalization_voltage", 58.4))
+            self.assertFalse(fakecloud.send_control_number("equalization_voltage", 56.05))
+            self.assertFalse(fakecloud.send_control_number("equalization_voltage", 47.9))
+            self.assertFalse(fakecloud.send_control_number("equalization_voltage", 60.1))
+        for ci, body in zip(sent, (b"PBEQV56.00", b"PBEQV58.40")):
+            self.assertEqual(base64.b64decode(ci), body + binascii.crc_hqx(body, 0).to_bytes(2, "big") + b"\r")
+        for block, eq in ((b"(0 044.0 020 044.0 044.0 048.0 0 056.0 060 120 030 0000 0000 05 0000 52.0 25975\r", 56.0),
+                          (b"(1 044.0 020 044.0 046.0 054.0 0 058.4 060 120 030 0000 0000 05 0000 52.0 50000\r", 58.4)):
+            self.assertEqual(SolarParser._try_ascii_schema({"dHrK": block})["battery_equalization_voltage_v"], eq)
+        self.assertIn("battery_equalization_voltage_v", mqtt._CONTROL_TELEMETRY_STATE["equalization_voltage"]["value_template"])
+
+    def test_dual_output_is_dhrk_token_0(self):
+        """App sent PDAULC00; HEEP2 read-back 1 -> 0 (2026-09-26)."""
+        from src.siseli_local_bridge import mqtt
+        for block, expected in ((b"(1 044.0 020 044.0 044.0 048.0 0 058.4 060 120 030 0000 0000 05 0000 52.0 50000\r", "On"),
+                                (b"(0 044.0 020 044.0 044.0 048.0 0 058.4 060 120 030 0000 0000 05 0000 52.0 50000\r", "Off")):
+            with self.subTest(expected):
+                self.assertEqual(SolarParser._try_ascii_schema({"dHrK": block})["dual_output_mode"], expected)
+        vq = b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 005 0 0 \r"
+        self.assertNotIn("dual_output_mode", SolarParser._try_ascii_schema({"93VQ": vq}))
+        entry = mqtt._CONTROL_TELEMETRY_STATE["dual_output"]
+        self.assertIn("dual_output_mode", entry["value_template"])
+        self.assertEqual((entry["state_on"], entry["state_off"]), ("On", "Off"))
+
+    def test_priorities_read_back_the_value_sent(self):
+        """93VQ before the restore (factory values) and after POP01/PCP02/PVENGUSE01."""
+        from src.siseli_local_bridge import fakecloud, mqtt
+        before = b"(0 060 030 13600110230 011 1 1 0 0 1 010 020 095 050 056.4 056.4 042.0 020 0 0 \r"
+        after = b"(1 060 030 13610110230 012 0 1 0 0 1 015 025 030 020 056.4 056.4 042.0 020 0 0 \r"
+        s0 = SolarParser._try_ascii_schema({"93VQ": before})
+        s1 = SolarParser._try_ascii_schema({"93VQ": after})
+        self.assertEqual((s0["output_source_priority"], s1["output_source_priority"]),
+                         ("Solar First (SUB)", "Solar+Battery First (SBU)"))
+        self.assertEqual((s0["charger_priority"], s1["charger_priority"]),
+                         ("Solar First (SNU)", "Solar Only (OSO)"))
+        self.assertEqual((s0["solar_supply_priority"], s1["solar_supply_priority"]), ("BLU", "LBU"))
+        for setting in ("output_source_priority", "charger_priority", "solar_supply_priority"):
+            with self.subTest(setting):
+                _, _, options = mqtt._CONTROL_SELECTS[setting]
+                self.assertIn(setting, mqtt._CONTROL_TELEMETRY_STATE)
+                # every label the parser can produce for a sent code is a select option
+                for label, key in options.items():
+                    code = fakecloud.SELECT_SETTINGS[setting]["options"][key]
+                    self.assertTrue(code in ("0", "1", "2", "00", "01"), code)
+                self.assertIn(s1[setting], options)
+                self.assertIn(s0[setting], options)
+        self.assertNotIn("input_source_prompt_function", s1)
+        self.assertNotIn("parallel_role", s1)
+
+    def test_labels_are_the_select_options(self):
+        """grid_working_range's HA select reads this key back verbatim."""
+        from src.siseli_local_bridge import mqtt
+        _, _, options = mqtt._CONTROL_SELECTS["grid_working_range"]
+        self.assertEqual(set(options), {"UPS", "Appliance (APL)"})
+        self.assertIn("grid_working_range", mqtt._CONTROL_TELEMETRY_STATE)
+        for switch in ("buzzer", "backlight"):
+            with self.subTest(switch):
+                entry = mqtt._CONTROL_TELEMETRY_STATE[switch]
+                self.assertEqual((entry["state_on"], entry["state_off"]), ("On", "Off"))
 
 
 class TestDecodedFromMeasuredEvidence(_ParserTestCase):
@@ -630,7 +992,7 @@ class TestNoModuleMeasuresADurationOnTheWallClock(unittest.TestCase):
     SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "siseli_local_bridge"
 
     def test_no_runtime_module_calls_time_time(self):
-        for name in ("core.py", "parsers.py", "state.py", "mqtt.py"):
+        for name in ("core.py", "parsers.py", "state.py", "mqtt.py", "pi30.py"):
             with self.subTest(module=name):
                 text = (self.SRC / name).read_text(encoding="utf-8")
                 self.assertNotIn(

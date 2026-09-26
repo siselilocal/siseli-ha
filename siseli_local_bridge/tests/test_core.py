@@ -24,7 +24,15 @@ from src.siseli_local_bridge import mqtt as mqtt_mod
 from src.siseli_local_bridge import parsers as parser_module
 from src.siseli_local_bridge import state as shared_state
 from tests.captures import CAPTURE_TELEMETRY
-from tests.helpers import FakeMqttClient, envelope, inverter_packet, isolated_state, publish_packet, tcp_segments
+from tests.helpers import (
+    FakeMqttClient,
+    envelope,
+    inverter_packet,
+    isolated_state,
+    patched_env,
+    publish_packet,
+    tcp_segments,
+)
 
 INV_IP = "192.168.1.139"
 RTR_IP = "192.168.1.1"
@@ -522,13 +530,25 @@ class TestShutdown(_CoreTestCase):
 class TestSignalHandlerInstallation(unittest.TestCase):
     def test_importing_core_does_not_install_handlers(self):
         """Module-level signal.signal() made core.py untestable: it hijacked the
-        test runner's SIGINT and raised ValueError off the main thread."""
+        test runner's SIGINT and raised ValueError off the main thread.
+
+        The reload runs under BASE_ENV, and reloads config.py first, because
+        `from .config import *` rebinds every option on core from whatever config.py
+        holds at that moment. An unguarded reload here would hand core whatever env
+        a previous test's own reload of config.py left behind -- invisible, because
+        the tests that care patch the constants they read.
+
+        Ported from upstream fadmaz/siseli-ha commit ae1c05d (2026-09-22).
+        """
+        import importlib
         import signal
 
-        before = signal.getsignal(signal.SIGINT)
-        import importlib
+        import src.siseli_local_bridge.config as cfg
 
-        importlib.reload(core)
+        before = signal.getsignal(signal.SIGINT)
+        with patched_env():
+            importlib.reload(cfg)
+            importlib.reload(core)
         self.assertIs(signal.getsignal(signal.SIGINT), before)
 
     def test_install_signal_handlers_is_callable(self):
@@ -747,6 +767,45 @@ class TestNonBrokerTraffic(_CoreTestCase):
             )
         self.assertEqual(core.DROPPED_NON_TARGET, {})
 
+    def _ping(self, icmp_type, dst_mac="0a:0b:0c:0d:0e:0f"):
+        from scapy.all import ICMP, IP, Ether
+
+        return Ether(src=INV_MAC, dst=dst_mac) / IP(src=INV_IP, dst=RTR_IP) / ICMP(type=icmp_type)
+
+    def test_a_ping_answer_is_relayed_without_the_opt_in(self):
+        """The router pings the inverter and relays the request to it; without this the
+        inverter's answer was blackholed and the router never saw it."""
+        with mock.patch("src.siseli_local_bridge.core.resolve_own_mac", return_value="0a:0b:0c:0d:0e:0f"):
+            core.packet_callback(self._ping(0))
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0].dst, RTR_MAC)
+        self.assertEqual(core.DROPPED_NON_TARGET.get("OTHER", 0), 0, "a relayed packet is not a dropped one")
+
+    def test_a_ping_request_from_the_inverter_is_still_dropped(self):
+        with mock.patch("src.siseli_local_bridge.core.resolve_own_mac", return_value="0a:0b:0c:0d:0e:0f"):
+            core.packet_callback(self._ping(8))
+        self.assertEqual(self.sent, [])
+        self.assertEqual(core.DROPPED_NON_TARGET.get("OTHER"), 1)
+
+    def test_other_icmp_types_are_still_dropped(self):
+        with mock.patch("src.siseli_local_bridge.core.resolve_own_mac", return_value="0a:0b:0c:0d:0e:0f"):
+            core.packet_callback(self._ping(3))  # destination unreachable
+        self.assertEqual(self.sent, [])
+        self.assertEqual(core.DROPPED_NON_TARGET.get("OTHER"), 1)
+
+    def test_a_ping_answer_not_addressed_to_us_is_not_re_emitted(self):
+        """Same layer-2 guard as the opt-in path: a frame the router already received
+        directly must not be duplicated."""
+        with mock.patch("src.siseli_local_bridge.core.resolve_own_mac", return_value="0a:0b:0c:0d:0e:0f"):
+            core.packet_callback(self._ping(0, dst_mac=RTR_MAC))
+        self.assertEqual(self.sent, [])
+
+    def test_a_ping_answer_is_not_relayed_when_interception_is_off(self):
+        with mock.patch.multiple(core, AUTO_INTERCEPT=False), \
+             mock.patch("src.siseli_local_bridge.core.resolve_own_mac", return_value="0a:0b:0c:0d:0e:0f"):
+            core.packet_callback(self._ping(0))
+        self.assertEqual(self.sent, [])
+
 
 class TestStartupPath(unittest.TestCase):
     """The startup banner used to live inline in the __main__ body, where no test
@@ -786,7 +845,7 @@ class TestStartupPath(unittest.TestCase):
             re.findall(r"^def _([a-z]\w*)\(", (src_dir / "config.py").read_text(encoding="utf-8"), re.M)
         )
 
-        for module in ("core.py", "mqtt.py", "parsers.py"):
+        for module in ("core.py", "mqtt.py", "parsers.py", "pi30.py"):
             text = (src_dir / module).read_text(encoding="utf-8")
             if "from .config import *" not in text:
                 continue
@@ -1032,7 +1091,7 @@ class TestCachedFabricationsArePurged(unittest.TestCase):
                         "bat_v": 53.7,
                         "mode": "Battery Mode",
                         "overloaded": "No",
-                        "bms_communication_normal": "Yes",
+                        "bms_low_temperature_flag": "Yes",
                     },
                     f,
                 )
@@ -1041,7 +1100,7 @@ class TestCachedFabricationsArePurged(unittest.TestCase):
                 core.load_cached_state(path)
 
             self.assertEqual(shared_state.LAST_STATE["bat_v"], 53.7, "real values survive")
-            for key in ("mode", "overloaded", "bms_communication_normal"):
+            for key in ("mode", "overloaded", "bms_low_temperature_flag"):
                 with self.subTest(key=key):
                     self.assertIn(key, UNDECODED_SENSOR_KEYS)
                     self.assertNotIn(key, shared_state.LAST_STATE)

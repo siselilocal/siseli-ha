@@ -26,9 +26,6 @@ configuration:
   HTTP_STUB_REAL_IPS:
     name: 'HTTP Stub Real IPs'
     description: 'Comma-separated real internet IPs of the vendor cloud-discovery service. Some inverters skip DNS entirely and connect straight to a cached address, bypassing DNS Spoof Domain -- these IPs are answered locally too, just like Local Cloud IP, so that path is covered as well.'
-  DEV_SN:
-    name: 'Device Serial'
-    description: 'Serial number the HTTP stub answers with for POST /dtu/devices/findSingle during the inverter cloud-discovery bootstrap. Not validated by the dongle in any capture seen so far -- this add-on is the authority answering its own device, not a client proving itself to one -- so the placeholder default works for any single-inverter setup.'
   DNS_SPOOF_DOMAIN:
     name: 'DNS Spoof Domain'
     description: 'Comma-separated domain suffixes. Any DNS name the inverter asks for under one of these is answered with Local Cloud IP instead of its real address. Needs both the broker domain and the HTTP discovery domain to work offline -- leaving one out reproduces a real regression where the inverter connects to the broker but never sends telemetry. Only used when Local Cloud IP is set.'

@@ -266,7 +266,9 @@ goes straight back to the real gateway.
 By default the bridge relays only the inverter's **broker traffic** to
 `TARGET_HOST:TARGET_PORT`. Everything else it sends — DNS, NTP, anything to a secondary
 endpoint — is dropped, because the add-on is now the inverter's gateway but is not a
-router.
+router. The one exception is the inverter's answer to a ping (an ICMP echo reply): a
+router that pings the inverter every few seconds has its request relayed to it, and the
+reply is relayed back so the router sees the inverter answer. It needs no option.
 
 For most inverters this is fine. If yours fails to reconnect, or the health line reports
 dropped packets:
@@ -426,6 +428,21 @@ If the totals are inflated or were accumulated by a version before 2.6.7, set
 Expected. Some inverters report the live string on the second MPPT input, and the official
 app shows the same split. `c_generation_power_w` sums both, so the total is still correct.
 
+### Cell voltages, or the min/max cell voltage, read zero or stay frozen
+
+Which of two BMS data sets the inverter reports live depends on the **battery type** set in
+the inverter's battery settings (observed on an HPVINV04 with a 16-cell lithium bank). With one
+type the cell voltages (`Battery Voltage 1` to `16`) and the remaining capacity are live, and
+the BMS's own max/min summary reads zero. With the other type the summary is live, while the
+cell voltages and the remaining capacity keep repeating the last values they had.
+
+When the summary reads zero, the bridge computes the max, the min, their positions and the
+delta from the cell voltages of the same reading, instead of publishing zeros. Positions count
+from 1, and the first cell wins a tie. Those values describe only the cells the inverter
+lists, which is the whole bank on a 16-cell install. When the BMS's own summary is usable it is
+always the one published. The bridge cannot make both sets live at once: that is the
+inverter's choice, made by the battery type.
+
 ### Your inverter is not decoded
 
 Set **Debug Flags** to `blocks` and `unparsed_publish`, and **Log Level** to `info`, for
@@ -434,5 +451,10 @@ issue with the [unsupported inverter template](https://github.com/fadmaz/siseli-
 and attach the `[BLOCK RAW]` lines.
 
 > **Scrub your log before posting it.** The `topic=` values contain your device serial.
+
+**Exception: a Voltronic PI30 device** (its frames carry a valid checksum) is decoded
+automatically and logged as `[PI30 DECODE]` at warning level — no flags needed. It still
+creates no entities; that support is a diagnostic dump held in reserve, ported from
+upstream, for a device this fork's maintainer does not own.
 
 ---

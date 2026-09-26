@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
+from . import pi30
 from . import state as _shared_state
 from .loggers import log, log_kv, json_log, log_payload_preview, log_error_always, hex_preview
 from .sensors import SENSORS
@@ -176,6 +177,18 @@ _CHECKSUM_TAIL_BYTES = 2
 
 #: One-shot guard so a foreign device is diagnosed once, not on every payload.
 UNSUPPORTED_PROTOCOL_LOGGED = False
+#: The same, for a device whose frames are PI30 but whose block names are not the ones
+#: this build maps. Its **own** flag, deliberately: one flag shared with
+#: UNSUPPORTED_PROTOCOL_LOGGED would let whichever diagnosis fired first silence the
+#: other for the life of the process, and an install can have both kinds of device.
+PI30_BLOCK_NAMES_UNKNOWN_LOGGED = False
+#: Whether the PI30 field dump has been printed, and the device state it was printed for.
+#: The dump is one-shot, then re-arms whenever the mode or the QPIGS status bits change,
+#: because the evidence still missing is a capture taken in a state this device has
+#: never been observed in. A strictly one-shot line prints once per restart and is
+#: therefore almost impossible to catch in the right state.
+PI30_DECODE_LOGGED = False
+PI30_LAST_SIGNATURE = ""
 #: Integration clock per energy domain, holding time.monotonic() readings. They mean
 #: something only within one host boot, so they are persisted together with the boot id
 #: and resumed only in that boot (restore_energy_clocks). A dict rather than one global per domain, so
@@ -796,6 +809,78 @@ def _write_state_cache(snapshot: Dict[str, object], now: Optional[float] = None)
 def _log_debug_block(block_name: str, raw_text: str) -> None:
     """Log raw debug block data instead of creating HA entities."""
     log(f"[DEBUG BLOCK] {block_name}: {raw_text[:250]}", level="debug")
+
+
+#: What the reporter of a PI30 device is asked to send back, spelled out in the log so it
+#: does not depend on them finding the issue or the documentation first.
+#:
+#: Ported from upstream fadmaz/siseli-ha commit ae1c05d (2026-09-22). Our own fleet has no
+#: PI30 device -- this branch is unreached on every install we run today, structurally,
+#: the same way it is on upstream's supported installs (see pi30.py's own docstring and
+#: TestTheParserReachesPi30OnlyAsARescue in tests/test_pi30_detection.py). Kept in reserve:
+#: if a PI30 inverter is ever added here, its telemetry is decoded and reported from day
+#: one instead of reading "not a supported inverter variant" with nothing to act on.
+PI30_DECODE_NOTE = (
+    "this device speaks Voltronic PI30; these values are decoded but not published as "
+    "entities yet -- please post this whole block on "
+    "https://github.com/fadmaz/siseli-ha/issues/32 together with a vendor-portal "
+    "screenshot taken in the same minute"
+)
+
+
+def log_pi30_diagnostic(blocks: Dict[str, bytes], source_topic: Optional[str] = None) -> bool:
+    """Report a Voltronic PI30 payload. True when this payload was one.
+
+    Returns True for `unknown-names` as well: the frames verified and the device is
+    plainly PI30, so calling it "not a supported inverter variant" would be wrong even
+    though nothing here can decode its block names.
+
+    Logged at **warning**, the level the line it replaces uses. A user whose inverter is
+    unsupported has no reason to have raised their log level -- and `warning` is a
+    setting DOCS.md offers for quiet logs.
+    """
+    global PI30_BLOCK_NAMES_UNKNOWN_LOGGED, PI30_DECODE_LOGGED, PI30_LAST_SIGNATURE
+
+    result = pi30.decode(blocks)
+    detection = result.detection
+    if detection.verdict == pi30.NOT_PI30:
+        return False
+
+    if detection.verdict == pi30.UNKNOWN_NAMES:
+        if not PI30_BLOCK_NAMES_UNKNOWN_LOGGED:
+            PI30_BLOCK_NAMES_UNKNOWN_LOGGED = True
+            log_kv(
+                "[PI30 BLOCK NAMES UNKNOWN]",
+                level="warning",
+                note="every frame carries a valid Voltronic checksum, but none of this "
+                     "device's block names are ones this add-on maps to a query; it is a "
+                     "PI30 device this build cannot decode",
+                verified_frames=detection.verified,
+                block_count=detection.total,
+                names=sorted(blocks or {}),
+            )
+        return True
+
+    state_changed = bool(result.signature) and result.signature != PI30_LAST_SIGNATURE
+    if PI30_DECODE_LOGGED and not state_changed:
+        return True
+    PI30_DECODE_LOGGED = True
+    if result.signature:
+        PI30_LAST_SIGNATURE = result.signature
+
+    log_kv(
+        f"[{datetime.now().strftime('%H:%M:%S')}] [PI30 DECODE]",
+        level="warning",
+        note=PI30_DECODE_NOTE,
+        frames=f"{detection.verified}/{detection.total}",
+        mapped_names=len(detection.mapped_names),
+        decoded_fields=len(result.values),
+        topic=source_topic,
+        **result.context,
+    )
+    for query, fields in pi30.describe(result):
+        log_kv("[PI30 DECODE]", level="warning", query=query, **fields)
+    return True
 
 
 class SolarParser:
@@ -1517,7 +1602,33 @@ class SolarParser:
         return state
 
     @staticmethod
-    def _parse_bms_capacity(tokens: List[str]) -> Dict[str, object]:
+    def _valid_cells(tokens: List[str]) -> List[int]:
+        """The leading run of plausible cell voltages (2000-5000 mV) in a v09K block.
+
+        Stops at the first out-of-range token: see _parse_cell_list for why skipping
+        would renumber every later cell.
+        """
+        cell_values: List[int] = []
+        for tok in tokens:
+            val = SolarParser._to_int(tok)
+            if val is None or not (2000 <= val <= 5000):
+                break
+            cell_values.append(val)
+        return cell_values
+
+    @staticmethod
+    def _parse_bms_capacity(tokens: List[str], cells: Optional[List[int]] = None) -> Dict[str, object]:
+        """Decode uxJp: remaining and nominal capacity, display mode, and the BMS's own
+        whole-bank cell summary (max/min cell voltage, their positions, the delta).
+
+        `cells` is the v09K cell list of the same payload, if it carried one. It is
+        used only when uxJp's summary is unusable. Which of the two blocks is live
+        depends on the battery type set on the inverter (observed on the reference
+        install, 2026-09-11 to 2026-09-21): with one type uxJp carries the summary and
+        v09K is a frozen copy, with the other v09K is live and all four summary tokens
+        read 0000. The bridge used to publish those zeros as 0 mV, position 0 and a
+        delta of 0. The BMS's own summary always wins when it is usable.
+        """
         state: Dict[str, object] = {}
         if len(tokens) >= 2:
             rem = SolarParser._to_float(tokens[0])
@@ -1537,16 +1648,28 @@ class SolarParser:
             max_pos = SolarParser._to_int(tokens[4])
             min_mv = SolarParser._to_int(tokens[5])
             min_pos = SolarParser._to_int(tokens[6])
-            if max_mv is not None:
+            summary_usable = all(
+                v is not None and 2000 <= v <= 5000 for v in (max_mv, min_mv)
+            )
+            if summary_usable:
                 state["bms_max_cell_mv"] = max_mv
-            if max_pos is not None:
-                state["bms_max_cell_pos"] = max_pos
-            if min_mv is not None:
+                if max_pos is not None:
+                    state["bms_max_cell_pos"] = max_pos
                 state["bms_min_cell_mv"] = min_mv
-            if min_pos is not None:
-                state["bms_min_cell_pos"] = min_pos
-            if max_mv is not None and min_mv is not None:
+                if min_pos is not None:
+                    state["bms_min_cell_pos"] = min_pos
                 state["bms_cell_delta_mv"] = max_mv - min_mv
+            elif cells is not None and len(cells) >= 2:
+                # Positions are 1-based, as in uxJp ("0009" with cell 9 the maximum on
+                # the captured 32-cell bank). On a tie the first cell is reported; what
+                # the BMS itself does on a tie is not known. These describe the cells
+                # of the list only, which is the whole pack on a 16-cell install.
+                hi, lo = max(cells), min(cells)
+                state["bms_max_cell_mv"] = hi
+                state["bms_max_cell_pos"] = cells.index(hi) + 1
+                state["bms_min_cell_mv"] = lo
+                state["bms_min_cell_pos"] = cells.index(lo) + 1
+                state["bms_cell_delta_mv"] = hi - lo
         return state
 
     @staticmethod
@@ -1562,16 +1685,11 @@ class SolarParser:
         carries at most 16 cells while the pack may be larger (a 32-cell bank was
         observed reporting its minimum at position 32), so any summary computed from
         this list describes a subset. uxJp carries the BMS's own whole-bank summary
-        and is the sole writer of those keys.
+        and _parse_bms_capacity is the sole writer of those keys; it falls back to
+        this list only when uxJp's summary reads 0000 (see its docstring).
         """
         state: Dict[str, object] = {}
-        cell_values: List[int] = []
-
-        for tok in tokens:
-            val = SolarParser._to_int(tok)
-            if val is None or not (2000 <= val <= 5000):
-                break
-            cell_values.append(val)
+        cell_values = SolarParser._valid_cells(tokens)
 
         if not cell_values:
             return state
@@ -1739,12 +1857,12 @@ class SolarParser:
             # 4055 W delivered to the load. Nothing here identifies the relay.
             state["wdrr_status_bits"] = vals[8]
 
+        # Raw only: this token read "11" both with the inverter set to UPS and to
+        # APL (captures 2026-09-25), so it is not the AC input range. The real
+        # range is 93VQ's config-pack first digit, decoded below as
+        # mains_input_range.
         if len(vals) >= 10:
             state["mains_input_range_code"] = vals[9]
-            if vals[9] == "11":
-                state["mains_input_range"] = "UPS"
-            else:
-                state["mains_input_range"] = vals[9]
 
         if len(vals) >= 11:
             mains_apparent = SolarParser._to_int(vals[10])
@@ -1755,9 +1873,8 @@ class SolarParser:
             mains_apparent = SolarParser._to_int(tail_apparent)
             if mains_apparent is not None:
                 state["mains_apparent_va"] = abs(mains_apparent)
-        if "mains_input_range" not in state and tail_range is not None:
+        if "mains_input_range_code" not in state and tail_range is not None:
             state["mains_input_range_code"] = tail_range
-            state["mains_input_range"] = "UPS" if tail_range == "11" else tail_range
 
         mains_flow_code = state.get("mains_flow_code")
         mains_flow_code_str = str(mains_flow_code).strip() if mains_flow_code is not None else None
@@ -1918,6 +2035,11 @@ class SolarParser:
 
         # Settings candidates -> dHrK
         vals = parsed.get("dHrK", ("", []))[1]
+        # Token 0 = dual output on/off. Capture of 2026-09-26: the vendor app sent
+        # PDAULC00 (dual output off) and the next HEEP2 read showed this token
+        # 1 -> 0; it had been 0 before the factory reset turned it on.
+        if vals and vals[0] in ("0", "1"):
+            state["dual_output_mode"] = "On" if vals[0] == "1" else "Off"
         if len(vals) >= 2:
             maybe_ov = SolarParser._to_float(vals[1])
             if maybe_ov is not None:
@@ -2003,6 +2125,12 @@ class SolarParser:
 
         # Settings / mode block -> 93VQ
         vals = parsed.get("93VQ", ("", []))[1]
+        # Token 0 = output source priority (Programme 01): POP01 (SBU) moved it
+        # 0 -> 1 on 2026-09-26, and it read 1 (SBU, the user's setting) before the
+        # factory reset. POP0<n> values are front-panel confirmed; labels =
+        # mqtt._CONTROL_SELECTS options.
+        if vals and vals[0] in ("0", "1"):
+            state["output_source_priority"] = "Solar+Battery First (SBU)" if vals[0] == "1" else "Solar First (SUB)"
         if len(vals) >= 3:
             max_total = SolarParser._to_int(vals[1])
             max_utility = SolarParser._to_int(vals[2])
@@ -2025,12 +2153,36 @@ class SolarParser:
                 if out_set_v is not None and 100 <= out_set_v <= 300:
                     state["output_set_voltage"] = out_set_v
                     if len(prefix) >= 8:
-                        state["ac_charging_switch"] = "Close" if prefix[0] == "1" else "Open"
+                        # AC input range (manual Programme 03), not an "AC charging
+                        # switch" as the vendor portal labels it: captures of
+                        # 2026-09-25 show this digit alone flipping 1 -> 0 when the
+                        # vendor app switched UPS -> APL (PGR01 -> PGR00), with the
+                        # mains loss low point in WdRR moving 170 V -> 90 V at the
+                        # same time. The labels match mqtt._CONTROL_SELECTS'
+                        # grid_working_range options, which read this key back.
+                        state["mains_input_range"] = {"1": "UPS", "0": "Appliance (APL)"}.get(prefix[0], prefix[0])
                         state["charging_priority_order"] = {"1": "UTI", "2": "SOL", "3": "SNU"}.get(prefix[1], prefix[1])
-                        state["working_mode"] = {"1": "UTI", "2": "SUB", "3": "SBU"}.get(prefix[2], prefix[2])
-                        state["input_source_prompt_function"] = "On" if prefix[3] == "1" else "Off"
+                        # Battery type (manual Programme 05), not a UTI/SUB/SBU
+                        # working mode: capture of 2026-09-25 shows this digit alone
+                        # going 6 -> 4 -> 6 as the vendor app set Growatt ->
+                        # Pylontech -> Growatt. The other codes follow the manual's
+                        # option order (AGM first), which both observed codes fit;
+                        # labels carry the LCD abbreviation.
+                        state["battery_type"] = {
+                            "0": "AGM", "1": "Flooded (FLD)", "2": "User-defined (USE)",
+                            "3": "LIA protocol (LIA)", "4": "Pylontech (PYL)",
+                            "5": "Techfine (TQF)", "6": "Growatt (GRO)",
+                            "7": "Felicity (FEL)", "8": "LIB protocol (LIB)",
+                            "9": "Third-party lithium (LIC)",
+                        }.get(prefix[2], prefix[2])
+                        # Solar supply priority (Programme 43), not an "input source
+                        # prompt": PVENGUSE01 (LBU) moved it 0 -> 1 on 2026-09-26,
+                        # and it read 1 (LBU, the user's setting) before the factory
+                        # reset set it to 0. Labels = mqtt._CONTROL_SELECTS options.
+                        state["solar_supply_priority"] = {"0": "BLU", "1": "LBU"}.get(prefix[3], prefix[3])
                         state["eco"] = "On" if prefix[4] == "1" else "Off"
-                        state["dual_output_mode"] = "On" if prefix[5] == "1" else "Off"
+                        # prefix[5] is NOT dual output (it read 1 while dual output
+                        # was off): the real state is dHrK token 0, decoded below.
                         state["does_machine_have_output"] = "Yes" if prefix[6] == "1" else "No"
                         state["grid_connection_function"] = "On" if prefix[7] == "1" else "Off"
         if len(vals) >= 5:
@@ -2040,10 +2192,21 @@ class SolarParser:
             if len(aux_pack) >= 2:
                 state["parallel_mode"] = "Enable" if aux_pack[1] == "1" else "Disable"
             if len(aux_pack) >= 3:
-                state["parallel_role"] = "Host" if aux_pack[2] == "1" else "Slave"
+                # Charger priority (Programme 16), not a parallel role: PCP02 (OSO)
+                # moved it 1 -> 2 on 2026-09-26, and it read 2 (OSO, the user's
+                # setting) before the factory reset. Codes are the PCP0<n> values
+                # confirmed on the front panel (fakecloud.SELECT_SETTINGS).
+                state["charger_priority"] = {
+                    "0": "Solar + Utility (CSO)", "1": "Solar First (SNU)", "2": "Solar Only (OSO)",
+                }.get(aux_pack[2], aux_pack[2])
         if len(vals) >= 10:
-            state["automatic_return_to_first_page"] = "On" if vals[5] == "1" else "Off"
-            state["buzzer_function"] = "On" if vals[6] == "1" else "Off"
+            # Tokens 5 and 6 are buzzer and LCD backlight, one position earlier than
+            # the vendor portal's labels (which put "automatic return to first page"
+            # at 5 and buzzer at 6). Capture of 2026-09-25, vendor app refreshing
+            # after each change: buzzer On -> 5 alone went 1, Off -> 0; backlight
+            # On -> 6 alone went 1, Off -> 0.
+            state["buzzer_function"] = "On" if vals[5] == "1" else "Off"
+            state["lcd_back_lighting"] = "On" if vals[6] == "1" else "Off"
             state["power_supply_from_pv_to_load_in_ac_state"] = "Yes" if vals[7] == "1" else "No"
             state["grid_connection_sign"] = "Off Grid" if vals[8] == "1" else "On Grid"
             state["battery_equalization_mode"] = "Disable" if vals[9] == "1" else "Enable"
@@ -2086,6 +2249,13 @@ class SolarParser:
         # strict integer parser. 2ONL is the battery block and is the sole writer.
         if len(vals) >= 2:
             state["yavb_flags_raw"] = vals[1]
+            # First flag = inverter<->BMS communication up. Captures of 2026-09-26:
+            # it went 1 -> 0 each time communication was lost (battery type set to
+            # PYL twice, which this BMS does not speak; BMS cable unplugged for 4
+            # minutes) and back to 1 each time it was restored. While it is 0 the
+            # inverter's SOC is its own estimate (read 99-100 % against a real 43 %).
+            if vals[1][:1] in ("0", "1"):
+                state["bms_communication_normal"] = "Yes" if vals[1][0] == "1" else "No"
         if len(vals) >= 3:
             v = SolarParser._to_float(vals[2])
             if v is not None:
@@ -2166,7 +2336,8 @@ class SolarParser:
         # BMS capacities / display metadata -> uxJp
         vals = parsed.get("uxJp", ("", []))[1]
         if vals:
-            state.update(SolarParser._parse_bms_capacity(vals))
+            cells = SolarParser._valid_cells(parsed.get("v09K", ("", []))[1])
+            state.update(SolarParser._parse_bms_capacity(vals, cells))
 
         # battery_status is derived after the energy calculation, from the same
         # resolved figures, so the two cannot contradict each other. It previously
@@ -2403,6 +2574,16 @@ class SolarParser:
             # needing a debug flag -- someone whose inverter is not supported has no
             # reason to have turned one on, which is precisely how issue #30 reached
             # "all sensors Unknown" with nothing in the log naming the cause.
+            # A Voltronic PI30 device answers this description and is not foreign: its
+            # frames carry a checksum that verifies. It is reached only from here, the
+            # arm no payload the Device A decoder understood has ever entered. Ported
+            # from upstream fadmaz/siseli-ha commit ae1c05d (2026-09-22); we have no
+            # PI30 device today, so this is held in reserve for one.
+            if log_pi30_diagnostic(blocks, source_topic):
+                if LOG_UNPARSED_PUBLISH:
+                    log_payload_preview("[UNPARSED PAYLOAD: PI30]", payload_bytes, topic=source_topic, block_names=sorted(blocks.keys()))
+                return False
+
             global UNSUPPORTED_PROTOCOL_LOGGED
             if not UNSUPPORTED_PROTOCOL_LOGGED:
                 UNSUPPORTED_PROTOCOL_LOGGED = True

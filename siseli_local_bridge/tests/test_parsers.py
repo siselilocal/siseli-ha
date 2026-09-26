@@ -88,7 +88,7 @@ class TestParsers(unittest.TestCase):
             "low_battery_alarm", "input_voltage_too_high", "eeprom_data_abnormality",
             "eeprom_read_write_exception", "abnormal_fan_speed", "abnormal_low_pv_power",
             "abnormal_temperature_sensor", "charging_light_status", "mains_light_status",
-            "inverter_light_status", "warning_light_status", "lcd_back_lighting",
+            "inverter_light_status", "warning_light_status",
             "pv_energy_feeding_priority", "pv_grid_connection_agreement",
         ):
             with self.subTest(key=key):
@@ -96,12 +96,12 @@ class TestParsers(unittest.TestCase):
 
         # The genuine token decodes must survive untouched.
         self.assertEqual(state["output_set_voltage"], 230)
-        self.assertEqual(state["ac_charging_switch"], "Close")
+        self.assertEqual(state["mains_input_range"], "UPS")
         self.assertEqual(state["charging_priority_order"], "SNU")
-        self.assertEqual(state["working_mode"], "SBU")
+        self.assertEqual(state["battery_type"], "LIA protocol (LIA)")
         self.assertEqual(state["eco"], "Off")
         self.assertEqual(state["ct_function_switch"], "OFF")
-        self.assertEqual(state["parallel_role"], "Host")
+        self.assertEqual(state["charger_priority"], "Solar First (SNU)")
         self.assertEqual(state["maximum_total_charging_current_a"], 50)
         self.assertEqual(state["max_utility_charge_current_a"], 10)
         self.assertEqual(state["bms_low_power_soc"], 15)
@@ -235,12 +235,12 @@ class TestDtuIdFromTopic(unittest.TestCase):
 
     def test_a_real_topic_yields_the_collector_id(self):
         self.assertEqual(
-            dtu_id_from_topic("dtu/12345678901234567890/pub/event/dev_prop_post"),
-            "12345678901234567890",
+            dtu_id_from_topic("dtu/34545375423553743260/pub/event/dev_prop_post"),
+            "34545375423553743260",
         )
 
     def test_anything_not_that_shape_yields_nothing(self):
-        for topic in ("dtu/x/pub", "other/12345678901234567890/pub", "dtu", "", None,
+        for topic in ("dtu/x/pub", "other/34545375423553743260/pub", "dtu", "", None,
                       "dtu/123/pub"):
             with self.subTest(topic=topic):
                 self.assertIsNone(dtu_id_from_topic(topic))

@@ -129,6 +129,7 @@ def isolated_state():
     saved_state = dict(shared_state.LAST_STATE)
     saved_published = set(shared_state.PUBLISHED_SENSOR_KEYS)
     saved_discovery = shared_state.DISCOVERY_PUBLISHED
+    saved_cleaned = shared_state.DISCOVERY_CLEANED
     saved_flows = dict(parser_mod.FLOW_STATES)
     saved_topics = dict(parser_mod.SEEN_MQTT_TOPICS)
     saved_energy_clocks = dict(parser_mod.LAST_ENERGY_TS)
@@ -142,6 +143,12 @@ def isolated_state():
     saved_grid_rejected = parser_mod.GRID_VALUE_REJECTED_LOGGED
     saved_unsupported = parser_mod.UNSUPPORTED_PROTOCOL_LOGGED
     saved_current_rejected = parser_mod.BATTERY_CURRENT_REJECTED_LOGGED
+    # PI30's one-shots and the device state its dump re-arms on. The automatic scan in
+    # TestEveryOnceFlagIsIsolated finds the two bool *_LOGGED names; the signature is a
+    # str, so it is invisible to that scan and would leak between tests silently.
+    saved_pi30_unknown = parser_mod.PI30_BLOCK_NAMES_UNKNOWN_LOGGED
+    saved_pi30_logged = parser_mod.PI30_DECODE_LOGGED
+    saved_pi30_signature = parser_mod.PI30_LAST_SIGNATURE
     try:
         yield
     finally:
@@ -150,6 +157,7 @@ def isolated_state():
         shared_state.PUBLISHED_SENSOR_KEYS.clear()
         shared_state.PUBLISHED_SENSOR_KEYS.update(saved_published)
         shared_state.DISCOVERY_PUBLISHED = saved_discovery
+        shared_state.DISCOVERY_CLEANED = saved_cleaned
         parser_mod.FLOW_STATES.clear()
         parser_mod.FLOW_STATES.update(saved_flows)
         parser_mod.SEEN_MQTT_TOPICS.clear()
@@ -167,6 +175,9 @@ def isolated_state():
         parser_mod.GRID_VALUE_REJECTED_LOGGED = saved_grid_rejected
         parser_mod.UNSUPPORTED_PROTOCOL_LOGGED = saved_unsupported
         parser_mod.BATTERY_CURRENT_REJECTED_LOGGED = saved_current_rejected
+        parser_mod.PI30_BLOCK_NAMES_UNKNOWN_LOGGED = saved_pi30_unknown
+        parser_mod.PI30_DECODE_LOGGED = saved_pi30_logged
+        parser_mod.PI30_LAST_SIGNATURE = saved_pi30_signature
 
 
 # ---------------------------------------------------------------- fake broker

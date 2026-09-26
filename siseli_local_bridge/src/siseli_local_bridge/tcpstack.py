@@ -10,7 +10,11 @@ Deliberately not a general-purpose TCP stack. What it does not do, on purpose:
     its expected sequence number is treated as a duplicate: re-ACK the current
     cumulative position, do not touch the buffer. If it was genuinely new data
     arriving early, the peer's own retransmission timer resends it once earlier
-    bytes are missing for long enough, and it will then land in order.
+    bytes are missing for long enough, and it will then land in order. The log
+    tells the cases apart (Connection._log_unexpected_payload): a duplicate of
+    bytes already held is routine on a Wi-Fi peer and is logged at debug as
+    [LOCAL CLOUD DUP]; a gap or an overlap carrying new bytes is logged as a
+    warning under [LOCAL CLOUD DIAG].
   - No congestion control, no window scaling, no SACK. Nothing here ever needs to
     move more than a few hundred bytes per connection.
 
@@ -66,6 +70,9 @@ class Connection:
         self.established = False
         self.closed = False
         self.recv_buffer = b""
+        # Data segments that did not land at their_next_seq, by kind; see receive().
+        self.duplicate_segments = 0
+        self.gap_segments = 0
         self.last_activity = time.monotonic()
         # Sniffer thread, telemetry poll thread and retransmit tick all send on the
         # same connection; our_seq/_inflight updates must not interleave.
@@ -194,23 +201,67 @@ class Connection:
             # Duplicate (old) or a gap (early) -- see module docstring. Either way,
             # re-assert what we actually have; do not touch the buffer.
             if payload:
-                # DIAGNOSTIC (2026-09-12): a real payload landing here, not just a
-                # bare/duplicate ACK, is exactly what the SYN-replacement scenario
-                # documented in handle_tcp would produce -- the peer's actual HTTP/
-                # MQTT request, silently re-ACKed instead of read, every time, until
-                # it gives up. Empty-payload mismatches are normal traffic and not
-                # logged; this branch should stay quiet unless that bug is real.
-                log(
-                    f"[LOCAL CLOUD DIAG] {self.peer_ip}:{self.peer_port} dropped "
-                    f"{len(payload)}B: seq={seq} != expected={self.their_next_seq} "
-                    "-- payload discarded, peer will see only a re-ACK",
-                    level="warning",
-                )
+                self._log_unexpected_payload(seq, payload)
             self.ack_only()
             return False
         self.recv_buffer += payload
         self.their_next_seq = (self.their_next_seq + len(payload)) & 0xFFFFFFFF
         return True
+
+    def _log_unexpected_payload(self, seq: int, payload: bytes) -> None:
+        """Say which way a data segment missed their_next_seq.
+
+        DIAGNOSTIC (2026-09-12): a real payload landing off-sequence is what the
+        SYN-replacement scenario documented in handle_tcp would produce -- the peer's
+        actual HTTP/MQTT request, silently re-ACKed instead of read, every time, until
+        it gives up. Empty-payload mismatches are normal traffic and never reach here.
+
+        One warning for every off-sequence payload turned out to be the wrong shape
+        (measured 2026-09-21 on a healthy session: about 3.4 a minute, 114 of 121
+        exact duplicates of the last segment, six older duplicates, one gap, no
+        overlap): the dongle end is Wi-Fi and simply re-sends a reply whose ACK it has
+        not seen yet, so a warning per event buried the real anomalies. Three cases:
+
+          - duplicate: the segment ends at or before their_next_seq, every byte is
+            already held. Routine; debug level, counted in duplicate_segments.
+          - gap: the segment starts beyond their_next_seq, earlier bytes are missing.
+            Nothing is kept (there is no reassembly here); the peer retransmits from
+            the re-ACKed position. Warning, counted in gap_segments.
+          - overlap: the segment starts before their_next_seq but reaches past it, so
+            it carries new bytes that are discarded along with the old ones. Never
+            seen on a real session; warning, because it is the case that loses data
+            if the peer does not retransmit.
+        """
+        expected = self.their_next_seq
+        size = len(payload)
+        peer = f"{self.peer_ip}:{self.peer_port}"
+        behind = (expected - seq) & 0xFFFFFFFF  # RFC 1982: < 2**31 means seq is earlier
+        if behind < 0x80000000:
+            if behind >= size:
+                self.duplicate_segments += 1
+                log(
+                    f"[LOCAL CLOUD DUP] {peer} duplicate {size}B: seq={seq} already "
+                    f"received (expected={expected}, {behind}B behind, "
+                    f"#{self.duplicate_segments}) -- ignored, re-ACKed",
+                    level="debug",
+                )
+                return
+            log(
+                f"[LOCAL CLOUD DIAG] {peer} overlap {size}B: seq={seq}, "
+                f"expected={expected} -- {behind}B already received, "
+                f"{size - behind}B new discarded until the peer retransmits "
+                "from expected",
+                level="warning",
+            )
+            return
+        self.gap_segments += 1
+        log(
+            f"[LOCAL CLOUD DIAG] {peer} gap {size}B: seq={seq} is "
+            f"{(seq - expected) & 0xFFFFFFFF}B beyond expected={expected} -- earlier "
+            f"bytes missing, segment discarded until the peer retransmits from "
+            f"expected (#{self.gap_segments})",
+            level="warning",
+        )
 
     def close(self, reason: str = "") -> None:
         if self.closed:

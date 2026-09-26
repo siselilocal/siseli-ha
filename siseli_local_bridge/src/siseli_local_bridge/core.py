@@ -11,6 +11,7 @@ from typing import Optional
 from scapy.all import (  # type: ignore
     ARP,
     DNS,
+    ICMP,
     IP,
     TCP,
     UDP,
@@ -205,6 +206,9 @@ OWN_MAC: Optional[str] = None
 #: Surfaced in the health line so the need for FORWARD_ALL_INVERTER_TRAFFIC can be
 #: judged from evidence rather than guessed at.
 DROPPED_NON_TARGET = {}
+#: ICMP type of an echo reply -- the one kind of non-broker inverter traffic relayed
+#: without FORWARD_ALL_INVERTER_TRAFFIC. See packet_callback.
+ICMP_ECHO_REPLY = 0
 
 
 def resolve_own_mac() -> Optional[str]:
@@ -526,7 +530,17 @@ def packet_callback(pkt) -> None:
         bucket = f"{proto}:{port}" if port else proto
         DROPPED_NON_TARGET[bucket] = DROPPED_NON_TARGET.get(bucket, 0) + 1
 
-        if FORWARD_ALL_INVERTER_TRAFFIC and AUTO_INTERCEPT and RTR_MAC:
+        # The one exception that needs no opt-in: the answer to a ping. The router pings
+        # the inverter about every 2.5 s (measured on end0, 2026-09-21). The
+        # router->inverter direction is always relayed below, so the request arrives and
+        # the inverter answers, but the echo-reply is inverter->router and used to fall
+        # here and be blackholed: the router never saw the inverter answer. An echo
+        # reply only ever answers a frame we relayed ourselves, opens nothing and
+        # carries nothing worth withholding; every other non-broker packet is still
+        # governed by FORWARD_ALL_INVERTER_TRAFFIC.
+        is_ping_answer = ICMP in pkt and int(pkt[ICMP].type) == ICMP_ECHO_REPLY
+
+        if (FORWARD_ALL_INVERTER_TRAFFIC or is_ping_answer) and AUTO_INTERCEPT and RTR_MAC:
             # Only frames addressed to us at layer 2 were actually routed here.
             # Without this guard the inverter's broadcast and multicast traffic gets
             # re-emitted, duplicating what the real router already received.

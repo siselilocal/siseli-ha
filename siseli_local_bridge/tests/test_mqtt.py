@@ -57,12 +57,12 @@ class TestWireIdentityOnTheDeviceCard(_MqttTestCase):
         shared_state.LAST_STATE.update({
             "firmware_version": "0010.11",
             "model_code": "HPVINV04",
-            "dtu_id": "12345678901234567890",
+            "dtu_id": "34545375423553743260",
         })
         info = mqtt_mod.device_info("main")
         self.assertEqual(info["sw_version"], "0010.11")
         self.assertEqual(info["hw_version"], "HPVINV04")
-        self.assertEqual(info["serial_number"], "12345678901234567890")
+        self.assertEqual(info["serial_number"], "34545375423553743260")
         # model stays the user's configured value; nothing configured is overridden.
         self.assertEqual(info["model"], TOPICS["MODEL_NAME"])
 

@@ -172,6 +172,9 @@ _CONTROL_SWITCHES = {
     "backlight": ("Backlight", "mdi:lightbulb-outline"),
     "buzzer": ("Buzzer", "mdi:volume-high"),
     "dual_output": ("Dual Output", "mdi:electric-switch"),
+    # Programme 08. Optimistic until the 93VQ digit is confirmed on the front
+    # panel: the existing "eco" sensor read On while the panel showed SdS.
+    "eco": ("ECO Power Saving", "mdi:leaf"),
 }
 #: button suffix -> (label, icon, fakecloud function name to call on press). Kept
 #: as a dict so discovery/subscribe/dispatch below can never drift apart, same
@@ -179,6 +182,210 @@ _CONTROL_SWITCHES = {
 _CONTROL_BUTTONS = {
     "clear_fault_code": ("Clear Fault Code", "mdi:alert-remove-outline", "send_clear_fault_code"),
     "refresh_telemetry": ("Refresh Telemetry", "mdi:refresh", "send_manual_refresh"),
+}
+#: setting name -> (label, icon, {HA-displayed option -> fakecloud.SELECT_SETTINGS
+#: option key}). Unlike _CONTROL_SWITCHES/_CONTROL_BUTTONS, this dispatches a
+#: generic write built from fakecloud.build_write_ci rather than a pre-captured
+#: `ci`. output_source_priority is confirmed working (front panel checked
+#: 2026-09-23, see fakecloud.SELECT_SETTINGS); charger_priority and
+#: grid_working_range are NOT yet confirmed -- output_source_priority's own
+#: values were wrong on the first try, so treat these the same way until
+#: someone reads the front panel after using them.
+_CONTROL_SELECTS = {
+    "output_source_priority": (
+        "Output Source Priority", "mdi:transmission-tower",
+        {
+            "Solar+Battery First (SBU)": "solar_battery_first",
+            "Solar First (SUB)": "solar_first",
+        },
+    ),
+    "charger_priority": (
+        # "Solar Residual (SOR)" dropped 2026-09-23: confirmed absent on this
+        # inverter (see fakecloud.SELECT_SETTINGS), same reasoning as
+        # output_source_priority only exposing its 2 confirmed options.
+        "Charger Priority", "mdi:battery-sync",
+        {
+            "Solar Only (OSO)": "solar_only",
+            "Solar + Utility (CSO)": "solar_and_utility",
+            "Solar First (SNU)": "solar_first",
+        },
+    ),
+    "grid_working_range": (
+        "Grid Working Range", "mdi:sine-wave",
+        {
+            "UPS": "ups",
+            "Appliance (APL)": "appliance",
+        },
+    ),
+    "solar_supply_priority": (
+        # Labels match the vendor app's own ("BLU"/"LBU") rather than
+        # expanding them -- see fakecloud.SELECT_SETTINGS, their exact
+        # meaning (a Battery/Load/Utility ordering) is inferred, not
+        # confirmed by the app's own UI text.
+        "Solar Supply Priority", "mdi:solar-power-variant",
+        {
+            "BLU": "blu",
+            "LBU": "lbu",
+        },
+    ),
+    "output_voltage": (
+        # Programme 10. Labels match the read-back template below.
+        "Output Voltage", "mdi:sine-wave",
+        {
+            "220 V": "220",
+            "230 V": "230",
+            "240 V": "240",
+        },
+    ),
+    "max_utility_charge_current": (
+        # Programme 11. Labels match the read-back template below.
+        "Max Utility Charge Current", "mdi:current-ac",
+        {f"{a} A": f"{a}" for a in (2, 10, 20, 30, 40, 50, 60, 70, 80, 90)},
+    ),
+    "battery_type": (
+        # Labels are parsers.py's battery_type values verbatim, so the
+        # telemetry read-back below matches an option. Only PYL and GRO are
+        # captured; see fakecloud.SELECT_SETTINGS for the others and for why
+        # changing this can cut the inverter's output.
+        "Battery Type", "mdi:battery-sync",
+        {
+            "AGM": "agm",
+            "Flooded (FLD)": "flooded",
+            "User-defined (USE)": "user_defined",
+            "LIA protocol (LIA)": "lia",
+            "Pylontech (PYL)": "pylontech",
+            "Techfine (TQF)": "techfine",
+            "Growatt (GRO)": "growatt",
+            "Felicity (FEL)": "felicity",
+            "LIB protocol (LIB)": "lib",
+            "Third-party lithium (LIC)": "third_party_lithium",
+        },
+    ),
+}
+
+
+#: setting name -> (label, icon). Limits and step come from
+#: fakecloud.NUMBER_SETTINGS so the HA slider can never offer a value the
+#: bridge (or the inverter) would refuse. Labels are the vendor app's own.
+_CONTROL_NUMBERS = {
+    "bms_lock_machine_soc": ("BMS Lock Machine SOC", "mdi:battery-off-outline"),
+    "bms_restore_mains_charging_soc": ("Restore Mains Charging SOC", "mdi:transmission-tower-import"),
+    "bms_restore_battery_discharging_soc": ("Restore Battery Discharging SOC", "mdi:battery-arrow-down"),
+    "bms_inverter_startup_soc": ("Inverter Startup SOC", "mdi:power"),
+    "back_to_grid_voltage": ("Back To Grid Voltage", "mdi:transmission-tower-import"),
+    "back_to_battery_voltage": ("Back To Battery Voltage", "mdi:battery-arrow-up"),
+    "equalization_voltage": ("Equalization Voltage", "mdi:battery-sync"),
+}
+
+
+#: setting name -> real telemetry read-back, for the handful of controls whose
+#: written value is ALSO decoded from the inverter's own spontaneous telemetry
+#: (parsers.py), rather than only the write-and-hope optimistic state every
+#: other control in this file uses.
+#:
+#: History: "dual_output" (`dual_output_mode`), "buzzer" (`buzzer_function`)
+#: and "grid_working_range" (then `mains_input_range` from WdRR) were all tried
+#: on 2026-09-23 and reverted, each stuck on one fixed value. At the time the
+#: shared mechanism below was suspected. Captures of 2026-09-25 showed the
+#: grid_working_range failure was the source field instead: the WdRR token
+#: reads "11" under both UPS and APL, while 93VQ's config-pack first digit
+#: follows the setting (1=UPS, 0=APL). mains_input_range is now decoded from
+#: that digit, so grid_working_range is back here. The buzzer failure was the
+#: same kind: buzzer_function read 93VQ token 6, which is the LCD backlight
+#: (buzzer is token 5) -- found by toggling each in the vendor app with a
+#: capture running, 2026-09-25. Both switches are back here on the corrected
+#: fields. dual_output stays out until its own field is checked the same way
+#: (change that one setting in the vendor app, capture, diff 93VQ) -- do not
+#: re-add it on code review alone.
+#:
+#: The value_template must render exactly one of the select's option labels
+#: (see _CONTROL_SELECTS), which is why parsers.py emits "UPS" and
+#: "Appliance (APL)" verbatim.
+#:
+#: A setting listed here is left out of `_handle_control_message`'s optimistic
+#: state publish -- publishing a second, competing value to a topic no
+#: discovery config points at any more would just be dead weight.
+_CONTROL_TELEMETRY_STATE = {
+    "grid_working_range": {
+        "group": get_sensor_group("mains_input_range"),
+        "value_template": "{{ value_json.mains_input_range }}",
+    },
+    "output_voltage": {
+        "group": get_sensor_group("output_set_voltage"),
+        "value_template": "{{ value_json.output_set_voltage }} V",
+    },
+    "max_utility_charge_current": {
+        "group": get_sensor_group("max_utility_charge_current_a"),
+        "value_template": "{{ value_json.max_utility_charge_current_a }} A",
+    },
+    "battery_type": {
+        "group": get_sensor_group("battery_type"),
+        "value_template": "{{ value_json.battery_type }}",
+    },
+    # Programmes 38-41: 93VQ tokens 10-13, confirmed against the front panel.
+    "bms_lock_machine_soc": {
+        "group": get_sensor_group("bms_low_power_soc"),
+        "value_template": "{{ value_json.bms_low_power_soc }}",
+    },
+    "bms_restore_mains_charging_soc": {
+        "group": get_sensor_group("bms_returns_to_mains_mode_soc"),
+        "value_template": "{{ value_json.bms_returns_to_mains_mode_soc }}",
+    },
+    "bms_restore_battery_discharging_soc": {
+        "group": get_sensor_group("bms_returns_to_battery_mode_soc"),
+        "value_template": "{{ value_json.bms_returns_to_battery_mode_soc }}",
+    },
+    "bms_inverter_startup_soc": {
+        "group": get_sensor_group("bms_auto_start_soc_after_low"),
+        "value_template": "{{ value_json.bms_auto_start_soc_after_low }}",
+    },
+    # Programmes 12-13: dHrK tokens 4-5.
+    "back_to_grid_voltage": {
+        "group": get_sensor_group("return_to_mains_mode_voltage_v"),
+        "value_template": "{{ value_json.return_to_mains_mode_voltage_v }}",
+    },
+    "back_to_battery_voltage": {
+        "group": get_sensor_group("return_to_battery_mode_voltage_v"),
+        "value_template": "{{ value_json.return_to_battery_mode_voltage_v }}",
+    },
+    "equalization_voltage": {
+        "group": get_sensor_group("battery_equalization_voltage_v"),
+        "value_template": "{{ value_json.battery_equalization_voltage_v }}",
+    },
+    # 93VQ token 0, aux pack digit 2 and config pack digit 3: each moved to the
+    # exact value sent (POP01, PCP02, PVENGUSE01) on 2026-09-26 and matched the
+    # user's settings before the factory reset.
+    "output_source_priority": {
+        "group": get_sensor_group("output_source_priority"),
+        "value_template": "{{ value_json.output_source_priority }}",
+    },
+    "charger_priority": {
+        "group": get_sensor_group("charger_priority"),
+        "value_template": "{{ value_json.charger_priority }}",
+    },
+    "solar_supply_priority": {
+        "group": get_sensor_group("solar_supply_priority"),
+        "value_template": "{{ value_json.solar_supply_priority }}",
+    },
+    # dHrK token 0 (not the 93VQ digit tried on 2026-09-23, which never moved).
+    "dual_output": {
+        "group": get_sensor_group("dual_output_mode"),
+        "value_template": "{{ value_json.dual_output_mode }}",
+        "state_on": "On",
+        "state_off": "Off",
+    },
+    "buzzer": {
+        "group": get_sensor_group("buzzer_function"),
+        "value_template": "{{ value_json.buzzer_function }}",
+        "state_on": "On",
+        "state_off": "Off",
+    },
+    "backlight": {
+        "group": get_sensor_group("lcd_back_lighting"),
+        "value_template": "{{ value_json.lcd_back_lighting }}",
+        "state_on": "On",
+        "state_off": "Off",
+    },
 }
 
 
@@ -200,6 +407,14 @@ _CONTROL_BUTTON_TOPICS = {
     control_command_topic(suffix): fn_name
     for suffix, (_, _, fn_name) in _CONTROL_BUTTONS.items()
 }
+#: command_topic -> setting name, same idea for the selects.
+_CONTROL_SELECT_TOPICS = {
+    control_command_topic(setting): setting for setting in _CONTROL_SELECTS
+}
+#: command_topic -> setting name, same idea for the numbers.
+_CONTROL_NUMBER_TOPICS = {
+    control_command_topic(setting): setting for setting in _CONTROL_NUMBERS
+}
 
 
 def publish_control_discovery() -> None:
@@ -212,11 +427,15 @@ def publish_control_discovery() -> None:
     LOCAL_CLOUD_IP-only code path."""
     for setting, (label, icon) in _CONTROL_SWITCHES.items():
         topic = f"{MQTT_DISCOVERY_PREFIX}/switch/{DEVICE_ID}/{setting}/config"
+        telemetry = _CONTROL_TELEMETRY_STATE.get(setting)
         payload = {
             "name": display_sensor_name(label),
             "unique_id": f"{DEVICE_ID}_{setting}",
             "command_topic": control_command_topic(setting),
-            "state_topic": control_state_topic(setting),
+            "state_topic": (
+                state_topic_for_group(telemetry["group"]) if telemetry
+                else control_state_topic(setting)
+            ),
             "payload_on": "ON",
             "payload_off": "OFF",
             "availability_topic": AVAILABILITY_TOPIC,
@@ -226,6 +445,10 @@ def publish_control_discovery() -> None:
             "icon": icon,
             "entity_category": "config",
         }
+        if telemetry:
+            payload["value_template"] = telemetry["value_template"]
+            payload["state_on"] = telemetry["state_on"]
+            payload["state_off"] = telemetry["state_off"]
         client.publish(topic, json.dumps(payload), retain=True)
 
     for suffix, (label, icon, _) in _CONTROL_BUTTONS.items():
@@ -244,11 +467,65 @@ def publish_control_discovery() -> None:
         }
         client.publish(topic, json.dumps(payload), retain=True)
 
+    for setting, (label, icon, options) in _CONTROL_SELECTS.items():
+        topic = f"{MQTT_DISCOVERY_PREFIX}/select/{DEVICE_ID}/{setting}/config"
+        telemetry = _CONTROL_TELEMETRY_STATE.get(setting)
+        payload = {
+            "name": display_sensor_name(label),
+            "unique_id": f"{DEVICE_ID}_{setting}",
+            "command_topic": control_command_topic(setting),
+            "state_topic": (
+                state_topic_for_group(telemetry["group"]) if telemetry
+                else control_state_topic(setting)
+            ),
+            "options": list(options.keys()),
+            "availability_topic": AVAILABILITY_TOPIC,
+            "payload_available": "online",
+            "payload_not_available": "offline",
+            "device": device_info("main"),
+            "icon": icon,
+            "entity_category": "config",
+        }
+        if telemetry:
+            payload["value_template"] = telemetry["value_template"]
+        client.publish(topic, json.dumps(payload), retain=True)
+
+    from . import fakecloud
+
+    for setting, (label, icon) in _CONTROL_NUMBERS.items():
+        limits = fakecloud.NUMBER_SETTINGS[setting]
+        topic = f"{MQTT_DISCOVERY_PREFIX}/number/{DEVICE_ID}/{setting}/config"
+        telemetry = _CONTROL_TELEMETRY_STATE.get(setting)
+        payload = {
+            "name": display_sensor_name(label),
+            "unique_id": f"{DEVICE_ID}_{setting}",
+            "command_topic": control_command_topic(setting),
+            "state_topic": (
+                state_topic_for_group(telemetry["group"]) if telemetry
+                else control_state_topic(setting)
+            ),
+            "min": limits["min"],
+            "max": limits["max"],
+            "step": limits["step"],
+            "mode": "box",
+            "unit_of_measurement": limits.get("unit", "%"),
+            "availability_topic": AVAILABILITY_TOPIC,
+            "payload_available": "online",
+            "payload_not_available": "offline",
+            "device": device_info("main"),
+            "icon": icon,
+            "entity_category": "config",
+        }
+        if telemetry:
+            payload["value_template"] = telemetry["value_template"]
+        client.publish(topic, json.dumps(payload), retain=True)
+
 
 def subscribe_control_topics() -> None:
     """Re-subscribes every reconnect (on_connect calls this) -- a broker does not
     remember a clean-session client's subscriptions across a disconnect."""
-    for topic in list(_CONTROL_SWITCH_TOPICS) + list(_CONTROL_BUTTON_TOPICS):
+    for topic in (list(_CONTROL_SWITCH_TOPICS) + list(_CONTROL_BUTTON_TOPICS)
+                  + list(_CONTROL_SELECT_TOPICS) + list(_CONTROL_NUMBER_TOPICS)):
         client.subscribe(topic)
 
 
@@ -288,6 +565,33 @@ def _handle_control_message(topic: str, raw_payload: bytes) -> None:
         getattr(fakecloud, fn_name)()
         return
 
+    select_setting = _CONTROL_SELECT_TOPICS.get(topic)
+    if select_setting is not None:
+        _, _, options = _CONTROL_SELECTS[select_setting]
+        option_key = options.get(payload)
+        if option_key is None:
+            log(f"[HA MQTT] control message on {topic!r} ignored: unexpected option {payload!r}", level="warning")
+            return
+        if fakecloud.send_control_select(select_setting, option_key) and select_setting not in _CONTROL_TELEMETRY_STATE:
+            # Same optimistic-state reasoning as the switch case below. Skipped
+            # for a setting in _CONTROL_TELEMETRY_STATE: its discovery state_topic
+            # now points at real telemetry, not control_state_topic, so writing
+            # here would only retain a value on a topic nothing reads any more.
+            client.publish(control_state_topic(select_setting), payload, retain=True)
+        return
+
+    number_setting = _CONTROL_NUMBER_TOPICS.get(topic)
+    if number_setting is not None:
+        try:
+            value = float(payload)
+        except ValueError:
+            log(f"[HA MQTT] control message on {topic!r} ignored: not a number {payload!r}", level="warning")
+            return
+        # Read back from telemetry only (all four are in _CONTROL_TELEMETRY_STATE):
+        # a refused or NAKed write simply leaves the entity on the real value.
+        fakecloud.send_control_number(number_setting, value)
+        return
+
     setting = _CONTROL_SWITCH_TOPICS.get(topic)
     if setting is None:
         return
@@ -299,12 +603,14 @@ def _handle_control_message(topic: str, raw_payload: bytes) -> None:
         log(f"[HA MQTT] control message on {topic!r} ignored: unexpected payload {payload!r}", level="warning")
         return
     turn_on = payload_upper == "ON"
-    if fakecloud.send_control_switch(setting, turn_on):
+    if fakecloud.send_control_switch(setting, turn_on) and setting not in _CONTROL_TELEMETRY_STATE:
         # Optimistic: the dongle's dev_rpc_reply to a command carries no field this
         # bridge has confirmed means success/failure (see README section 6), so
         # "the send happened" is the only signal available. Left unpublished on
         # failure (no connection) so the switch keeps showing its last known state
-        # rather than a state that was never actually reached.
+        # rather than a state that was never actually reached. Skipped for a
+        # setting in _CONTROL_TELEMETRY_STATE -- same reasoning as the select
+        # case above.
         client.publish(control_state_topic(setting), "ON" if turn_on else "OFF", retain=True)
 
 

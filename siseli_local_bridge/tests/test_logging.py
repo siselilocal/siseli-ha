@@ -6,6 +6,25 @@ from unittest import mock
 
 
 class TestLoggingLevels(unittest.TestCase):
+    """Reloading `loggers` is not undone by the test that did it.
+
+    `CURRENT_LOG_LEVEL` is normalised once, at import, from the config module's own
+    bound copy -- so a reload here leaves every later test in the session running at
+    whichever level the last case used. At `error` that silences every warning the
+    suite asserts on. Each case therefore restores the shipped level in tearDown.
+
+    Ported from upstream fadmaz/siseli-ha commit ae1c05d (2026-09-22), which found
+    this leak while adding a PI30 test file whose own assertions it silenced.
+    """
+
+    def setUp(self):
+        import src.siseli_local_bridge.loggers as log_mod
+
+        self.addCleanup(self._restore, log_mod.CURRENT_LOG_LEVEL)
+
+    def _restore(self, level: str):
+        self._reload_loggers(level)
+
     def _reload_loggers(self, level: str):
         env = {
             "LOG_LEVEL": level,

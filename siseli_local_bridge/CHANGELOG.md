@@ -2,6 +2,468 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.63] - 2026-09-26
+
+### Added
+
+- **Output Source Priority, Charger Priority and Solar Supply Priority now
+  read the inverter's real state back.** While restoring the settings after
+  the factory reset of 2026-09-26, `POP01`, `PCP02` and `PVENGUSE01` were
+  sent one after the other; exactly three 93VQ positions moved, each to the
+  value sent -- token 0 (0 -> 1), the aux pack's third digit (1 -> 2) and the
+  config pack's fourth digit (0 -> 1) -- and each had held the user's own
+  setting (SBU, OSO, LBU) before the reset. New sensors
+  `output_source_priority`, `charger_priority`, `solar_supply_priority`,
+  with the selects' option labels, back the three selects.
+- Removed `input_source_prompt_function` and `parallel_role`: they were the
+  solar supply and charger priority digits under the vendor portal's labels.
+
+## [2.6.62] - 2026-09-26
+
+### Added
+
+- **"Equalization Voltage" number (48.0-60.0 V, 0.1 V steps), manual
+  Programme 31, with read-back.** PI30 documents `PBEQV<nn.nn>`. Read back
+  from dHrK token 7, which the factory reset of 2026-09-26 moved 56.0 ->
+  58.4. The number controls now accept decimal steps: a value off the 0.1 V
+  grid, or out of range, is refused before anything is sent. Its read-back
+  was checked against the front panel (Programme 31 showed 58.4, as dHrK[7]).
+
+### Fixed
+
+- **Dual output state is dHrK token 0, and the "Dual Output" switch now reads
+  it back.** Capture `captures/2026-09-26_real-cloud_parallel.pcap`: the
+  vendor app's toggle sent `PDAULC00` (dual output off) and the next `HEEP2`
+  read showed dHrK token 0 go 1 -> 0 (it was 0 before the factory reset of
+  2026-09-26 turned it on). `dual_output_mode` used to come from 93VQ's
+  config pack digit 5, which reads 1 whatever the dual output state -- the
+  reason the 2.6.48 read-back looked stuck on ON. That digit is no longer
+  decoded.
+
+### Confirmed
+
+- Back To Grid / Back To Battery Voltage (2.6.61) work and are not locked
+  with a lithium battery type: 46 -> 44 V and 54 -> 48 V, both read back.
+
+## [2.6.61] - 2026-09-26
+
+### Added
+
+- **"Back To Grid Voltage" (44-51 V) and "Back To Battery Voltage" (48-58 V)
+  numbers, manual Programmes 12 and 13, with read-back.** Not offered by the
+  vendor app: PI30 documents `PBCV<nn.n>` and `PBDV<nn.n>`. Read back from
+  dHrK tokens 4 and 5, which the factory reset of 2026-09-26 moved 44 -> 46
+  and 48 -> 54. They may be locked while a lithium battery type with BMS
+  communication is selected (as Programme 24 is); the inverter would then
+  NAK and the entities keep showing the real value.
+
+### Confirmed
+
+- Output Voltage (`V<nnn>`) and Max Utility Charge Current (`MUCHGC0nn`)
+  from 2.6.60 work: every write ACKed and read back within about 15 s.
+
+## [2.6.60] - 2026-09-26
+
+### Added
+
+- **"Output Voltage" select (220/230/240 V), manual Programme 10, with
+  read-back.** Not offered by the vendor app. Voltronic's PI30 protocol
+  documents `V<nnn>` for the output rated voltage, in the same command family
+  as `POP`/`PCP`/`PGR`/`PBT`, all confirmed on this inverter; a wrong guess
+  would only be NAKed. Read back from `output_set_voltage`, the 93VQ config
+  pack tail, which the factory reset of 2026-09-26 moved from 240 to 230.
+- **"Max Utility Charge Current" select (2, 10-90 A), manual Programme 11,
+  with read-back.** Not offered by the vendor app either: PI30 documents
+  `MUCHGC<m><nn>` (m = parallel machine number, 0 here). Capped at 90 A since
+  above 99 A the documented format changes and cannot be checked. Read back
+  from `max_utility_charge_current_a` (93VQ token 2), moved 2 -> 30 A by the
+  factory reset.
+
+### Confirmed
+
+- The ECO switch (2.6.59) works: `PEj`/`PDj` were ACKed and the front panel
+  went `SEn` then `SdS`.
+
+## [2.6.59] - 2026-09-26
+
+### Added
+
+- **"ECO Power Saving" switch, manual Programme 08 -- to be confirmed on the
+  front panel.** The vendor app does not offer this setting, so nothing could
+  be captured. The backlight and buzzer commands this bridge already sends
+  turn out to be Voltronic PI30's standard flag commands (`PEx`/`PDx`,
+  `PEa`/`PDa`), and PI30 assigns flag `j` to power saving: `PEj`/`PDj` with
+  the same CRC16/XMODEM framing. Optimistic (no read-back) for now: the
+  existing `eco` sensor reads On while the panel shows `SdS` (disabled), so
+  its 93VQ digit is not trusted yet.
+
+## [2.6.58] - 2026-09-26
+
+### Added
+
+- **Four `number` controls for the BMS SOC thresholds, manual Programmes
+  38-41, with telemetry read-back.** Captured from the vendor app
+  (`captures/2026-09-26_real-cloud_prog38-41-soc.pcap`): `BMSSDC` (38, BMS
+  Lock Machine), `BMSB2UC` (39, Restore Mains Charging), `BMSU2BC` (40,
+  Restore Battery Discharging), `BMSSRC` (41, Inverter Startup), each a
+  3-digit percent. Every accepted write was answered `(ACK9` and read back by
+  the next `HEEP1` at 93VQ tokens 10-13, and the inverter's front panel
+  showed the same four values (15/25/30/20), which fixes the mapping.
+  - The inverter NAKs anything that is not a multiple of 5, so the HA
+    controls step by 5 and the bridge refuses other values before sending.
+  - Raising 38 made the inverter raise 39 and Programme 62 on its own to keep
+    them 5 points above it; the read-back shows whatever it settles on.
+  - Programme 38 shuts the inverter down below it, and the inverter powers
+    Home Assistant on the reference installation: the bridge refuses a value
+    at or above the current SOC, and refuses 38 entirely while BMS
+    communication is not confirmed (the SOC is then the inverter's own
+    99-100 % estimate).
+
+## [2.6.57] - 2026-09-26
+
+### Added
+
+- **"BMS Communication Normal" is decoded for the first time (Yes/No) and
+  enabled by default.** It is the first bit of Yavb's flag word, proven by
+  three independent communication losses in
+  `captures/2026-09-26_real-cloud_battery-type*.pcap` and
+  `captures/2026-09-26_real-cloud_bms-cable.pcap`: battery type set to PYL
+  twice (a protocol this BMS does not speak, inverter warning 61) and the BMS
+  cable unplugged for 4 minutes with the type left on GRO. The bit read 0
+  during each loss and 1 again after each recovery; nothing else in Yavb
+  tracked the cable test. While it reads No, the inverter's SOC is its own
+  estimate (99-100 % against a real 43 %), so SOC-based automations should
+  check it first. Removed from `UNDECODED_SENSOR_KEYS`.
+
+## [2.6.56] - 2026-09-26
+
+### Added
+
+- **New `select` control, "Battery Type" (`PBT0`, manual Programme 05), with
+  telemetry read-back.** Captured from the vendor app
+  (`captures/2026-09-26_real-cloud_battery-type-app.pcap`): `PBT04` for
+  Pylontech then `PBT06` for Growatt, CRC16/XMODEM matching the wire
+  byte-for-byte, each acknowledged `(ACK9` and read back by the next `HEEP1`
+  as 93VQ code 4 then 6. All ten types of the manual are offered on the
+  user's request; the eight other codes follow the manual's option order and
+  are not captured. The select reads the inverter's real type back from
+  `battery_type` (2.6.55).
+  - Caution, recorded in `fakecloud.SELECT_SETTINGS`: on the reference
+    installation a battery type change once cut the inverter's AC output,
+    which also powers Home Assistant; PYL with this BMS raises warning 61
+    (BMS communication lost) and makes the SOC read 99-100 %.
+
+## [2.6.55] - 2026-09-25
+
+### Fixed
+
+- **Buzzer, LCD backlight and battery type now decoded from the right 93VQ
+  positions, and the "Buzzer" and "Backlight" switches read the inverter's real
+  state back.** Capture `captures/2026-09-25_real-cloud_buzzer-backlight.pcap`:
+  the vendor app changed one setting at a time and refreshed after each (6
+  `HEEP1` reads, each answered with 93VQ):
+  - buzzer On/Off moved token 5 alone -> `buzzer_function` (it read token 6
+    before, which is why its 2.6.49 read-back looked stuck);
+  - backlight On/Off moved token 6 alone -> `lcd_back_lighting`, decoded for the
+    first time and enabled by default;
+  - battery type Pylontech/Growatt moved the config pack's 3rd digit alone
+    (`4` / `6`) -> `battery_type`, decoded for the first time and enabled by
+    default. The other eight codes follow the manual's Programme 05 option
+    order (0 AGM, 1 FLD, 2 USE, 3 LIA, 4 PYL, 5 TQF, 6 GRO, 7 FEL, 8 LIB,
+    9 LIC), which both observed codes fit exactly; anything else is raw.
+  - Removed `automatic_return_to_first_page` and `working_mode`: they were those
+    same positions under the vendor portal's labels. Their old HA entities are
+    left orphaned and can be deleted.
+  - `mqtt._CONTROL_TELEMETRY_STATE` gains `buzzer` and `backlight`.
+    `dual_output` stays optimistic until its field is checked the same way.
+  - Battery type is read-only on purpose: changing it cuts the inverter's AC
+    output for a moment.
+
+## [2.6.54] - 2026-09-25
+
+### Fixed
+
+- **"Mains Input Range" was decoded from the wrong field, and the "Grid
+  Working Range" select now reads the inverter's real state back.** Two
+  captures of the vendor cloud traffic (`captures/2026-09-25_real-cloud_*.pcap`):
+  with the inverter on UPS then switched to APL by the vendor app (`PGR01` ->
+  `PGR00`), WdRR token 10 stayed `11` both times -- it was never the range --
+  while 93VQ's config-pack first digit went `1` -> `0` and nothing else in
+  93VQ changed. WdRR's mains loss low point moved 170 V -> 90 V at the same
+  time, matching manual Programme 03 (UPS 170-280 V, APL 90-280 V).
+  - `mains_input_range` now comes from that 93VQ digit (`UPS` / `Appliance
+    (APL)`); WdRR's token is kept as raw `mains_input_range_code` only.
+  - `ac_charging_switch` removed: it was that same digit under the vendor
+    portal's label. Its old HA entity is left orphaned and can be deleted.
+  - `mqtt._CONTROL_TELEMETRY_STATE` gains `grid_working_range` again, backed
+    by `mains_input_range`. The 2.6.51 theory of a shared read-back bug does not
+    hold for this one; dual_output and buzzer stay optimistic until their own
+    fields are checked the same way.
+  - The vendor app's "refresh" for Battery Type, Buzzer, Backlight and Grid
+    Working Range all send the same read, `HEEP1` (reply = 93VQ); Parallel Mode
+    sends `HEEP2` (reply = dHrK).
+
+## [2.6.53] - 2026-09-24
+
+### Added
+
+- **New `select` control, "Solar Supply Priority" (BLU/LBU), found entirely
+  from a capture of the vendor app's own traffic -- not ported from
+  SoT-RWB1-Server-Emulator, which does not document this channel at all.**
+  Same method as 2.6.52's `grid_working_range` fix: user activated BLU then
+  LBU in the official app, `tcpdump` on `end0` caught `PVENGUSE00` (BLU) then
+  `PVENGUSE01` (LBU), CRC16/XMODEM verified byte-for-byte on both frames.
+  New `fakecloud.SELECT_SETTINGS["solar_supply_priority"]` (channel
+  `PVENGUSE`) and `mqtt._CONTROL_SELECTS["solar_supply_priority"]`. The
+  option labels match the app's own ("BLU"/"LBU") rather than an expanded
+  guess -- their exact meaning (a Battery/Load/Utility ordering for excess PV
+  power, distinct from output_source_priority and charger_priority) is
+  inferred, not confirmed by the app's own UI text.
+
+## [2.6.52] - 2026-09-24
+
+### Fixed
+
+- **`grid_working_range` (`PGR0`) had UPS/Appliance swapped**, same class of
+  bug as `output_source_priority` in 2.6.46. Root-caused with a real capture:
+  `LOCAL_CLOUD_IP` disabled and `FORWARD_ALL_INVERTER_TRAFFIC=true` so the
+  dongle talked to the real vendor cloud, `tcpdump` on `end0` while the user
+  drove the official app directly (APL then UPS 2s later). The wire showed
+  `PGR00` for APL and `PGR01` for UPS -- the source's documented SBU-style
+  mapping (UPS=0, APL=1) was inverted for this hardware. CRC16/XMODEM
+  confirms both frames byte-for-byte. `fakecloud.SELECT_SETTINGS` corrected
+  (`ups`->"1", `appliance`->"0"). The sequence ended on UPS and telemetry
+  read UPS afterwards, consistent with success; there is no mid-sequence
+  telemetry snapshot for the 9s spent on APL (below the ~5min spontaneous
+  push cycle), so that leg rests on the app's own wire evidence.
+
+## [2.6.51] - 2026-09-23
+
+### Reverted
+
+- **"Dual Output" switch loses its telemetry read-back too -- `mqtt.
+  _CONTROL_TELEMETRY_STATE` is now empty.** It was the one entry kept in
+  2.6.50 on the assumption it "worked correctly"; the user now reports it
+  also stuck always showing ON regardless of the real state, same symptom as
+  "buzzer" and "grid_working_range" before it. All three attempts have now
+  failed the same way, which points at a shared bug in how this file reads a
+  group's retained state topic back (not in any individual parsers.py field,
+  since all three source fields looked equally reliable by code inspection).
+  Every control is optimistic-only again, matching behavior before 2.6.48.
+  Root cause not yet found -- see `_CONTROL_TELEMETRY_STATE`'s docstring
+  before trying this again.
+
+## [2.6.50] - 2026-09-23
+
+### Fixed
+
+- **`charger_priority` (`PCP0`) sent the wrong value for every option, rotated
+  by one.** The user read the inverter's own front panel after each option:
+  sending "0" (documented as OSO) showed CSO, "1" (CSO) showed SNU, "2" (SNU)
+  showed OSO -- same class of bug as `output_source_priority` in 2.6.46, this
+  time affecting all three options instead of two. `fakecloud.SELECT_SETTINGS`
+  corrected (OSO->"2", CSO->"0", SNU->"1"). Also confirmed absent on this
+  inverter: **"Solar Residual (SOR)" is removed from the select entirely**
+  rather than left in as a non-functional fourth option.
+
+### Reverted
+
+- **"Buzzer" switch and "Grid Working Range" select lost the telemetry
+  read-back added in 2.6.48/2.6.49.** The user reported "Buzzer" stuck
+  always showing/sending On regardless of the real state, and "Grid Working
+  Range" stuck always reading back "UPS" no matter which option was sent.
+  Cause not yet understood -- `dual_output_mode`'s read-back (also 2.6.48)
+  behaves correctly, so this is not a blanket problem with the mechanism.
+  Both entities are back to the optimistic write-and-hope state every other
+  control uses, pending diagnosis. See `mqtt._CONTROL_TELEMETRY_STATE`'s
+  docstring for the do-not-re-add-blindly note.
+
+## [2.6.49] - 2026-09-23
+
+### Changed
+
+- **"Buzzer" (switch) now shows the inverter's own reported state too**, same
+  treatment as 2.6.48's "Dual Output"/"Grid Working Range": backed by
+  `buzzer_function` (parsers.py ~line 2164), the same reliable positional-bit
+  decode as `dual_output_mode` on the very same source line -- not a guess.
+  `mqtt._CONTROL_TELEMETRY_STATE` gained a `"buzzer"` entry (group
+  "diagnostics", per `get_sensor_group`); no longer published optimistically
+  in `_handle_control_message`. "Backlight" stays optimistic -- its would-be
+  telemetry field, `lcd_back_lighting`, has no decode line in parsers.py at
+  all (always unknown).
+
+## [2.6.48] - 2026-09-23
+
+### Changed
+
+- **"Dual Output" (switch) and "Grid Working Range" (select) now show the
+  inverter's own reported state instead of an optimistic guess.** The user
+  pointed out that both already have a matching telemetry sensor: `sensor.
+  ..._load_siseli_dual_output_mode` (parsers.py's `dual_output_mode`, a
+  positional bit decoded the same reliable way as every other prefix bit on
+  that line -- not a guess) and `sensor..._grid_siseli_mains_input_range`
+  (parsers.py's `mains_input_range`, which has only ever confirmed the "UPS"
+  code; the select's other option is inferred by elimination, being the only
+  other choice, not independently confirmed). New `mqtt._CONTROL_TELEMETRY_STATE`
+  points each entity's discovery `state_topic`/`value_template` at that
+  sensor's own group topic instead of the write-and-hope
+  `control_state_topic`, and `_handle_control_message` no longer publishes an
+  optimistic state for either one. Every other control (backlight, buzzer,
+  output_source_priority, charger_priority, the two buttons) is unaffected --
+  no matching telemetry sensor is known for them yet.
+
+## [2.6.47] - 2026-09-23
+
+### Added
+
+- **Two more `select` controls, "Charger Priority" (`PCP0`) and "Grid Working
+  Range" (`PGR0`), ported the same way as 2.6.45's "Output Source Priority"
+  (`fakecloud.build_write_ci`, same CRC mechanism, now proven working end-to-end
+  on our own inverter).** Their option values are carried over UNCHANGED from
+  SoT-RWB1-Server-Emulator's spec -- given `POP0`'s own values were wrong on the
+  first try (fixed in 2.6.46) and had to be corrected by physically reading the
+  inverter's front panel, these two should be treated as equally unverified
+  until confirmed the same way, even though the write mechanism itself is no
+  longer in doubt.
+
+## [2.6.46] - 2026-09-23
+
+### Fixed
+
+- **`output_source_priority` (the "Output Source Priority" select added in 2.6.45)
+  sent the two options swapped.** SoT-RWB1-Server-Emulator's spec documents the
+  dongle-side `POP0` channel as SBU=0 / SUB=1; confirmed by the user physically
+  reading the inverter's own front panel after each write (2026-09-23), sending
+  "1" made the panel show SBU and "0" made it show SUB -- inverted from that
+  source's documented mapping, on our specific inverter. `fakecloud.SELECT_SETTINGS`
+  now sends the values that match what this inverter actually does
+  (`solar_battery_first` -> "1", `solar_first` -> "0"); no change to the HA-facing
+  option labels or `mqtt.py`, since the bug was entirely in the value sent to the
+  dongle, not in how the entity presents itself.
+
+## [2.6.45] - 2026-09-23
+
+### Added
+
+- **First generic dev_rpc write command and a new `select` control, "Output Source
+  Priority".** Until now every working control command (backlight, buzzer, dual
+  output, clear fault) was a raw, pre-captured `ci` byte string, replayed exactly
+  as the vendor cloud/app sent it -- see `protocole-cloud-dongle/README.md`
+  section 6. `fakecloud.build_write_ci(channel, value)` is new: it builds
+  `"<CHANNEL><VALUE><CRC16-XMODEM><\r>"` and base64-encodes it, for channels this
+  bridge has never itself captured. The channel table (`fakecloud.SELECT_SETTINGS`,
+  starting with just `output_source_priority` / `POP0`) and the CRC algorithm are
+  ported from an independent reverse-engineering of the same RWB1 dongle protocol,
+  [SoT-RWB1-Server-Emulator](https://github.com/filipsworks/SoT-RWB1-Server-Emulator).
+  The CRC itself is cross-checked against this bridge's own real captures: computing
+  it over the bare mnemonic `PDAULC01`/`PDAULC00`/`FAULTC` reproduces the exact CRC
+  bytes already seen in `CONTROL_COMMANDS`/`_CLEAR_FAULT_CODE_CI` -- including
+  resolving a loose end from that section (`FAULTCG`'s trailing `G` is not part of
+  the mnemonic, it is this CRC's own high byte, which happens to be printable
+  ASCII). `output_source_priority` was picked first because it is an ordinary,
+  instantly-reversible operating-mode toggle already in the vendor app (not a
+  voltage/current/SOC setpoint), and its effect can be cross-checked afterwards
+  against this bridge's own PI30 telemetry decode (`pi30_output_source_priority`)
+  where that protocol is spoken. **Not yet physically confirmed on our own
+  inverter** -- unlike the four pre-existing commands, this one has not been
+  observed to actually change the inverter's behaviour yet.
+- `mqtt.py`: new `_CONTROL_SELECTS` table and a `select` MQTT-discovery branch in
+  `publish_control_discovery`/`subscribe_control_topics`/`_handle_control_message`,
+  parallel to the existing `_CONTROL_SWITCHES`/`_CONTROL_BUTTONS` machinery.
+
+## [2.6.44] - 2026-09-22
+
+### Added
+
+- **Voltronic PI30 detection and diagnostic decode, ported from upstream
+  fadmaz/siseli-ha commit `ae1c05d` (2026-09-22).** No inverter on this install speaks
+  PI30 today -- this is held in reserve so that if one is ever added, it is decoded and
+  reported from the first payload instead of reading "not a supported inverter variant"
+  with nothing to act on. New `pi30.py`: verifies every frame's CRC16-XMODEM before
+  reading a token, maps 20 block names to their query for this protocol family, and
+  decodes 71 fields by position, each behind its own shape check. Hooked into
+  `parsers.py::parse_payload` only in the branch reached when the existing Device-A
+  decoder recognised nothing at all -- unreachable for every device this build already
+  supports, since the two block-name sets are disjoint (pinned by test). Creates no HA
+  entity and writes no state; logs `[PI30 DECODE]` (or `[PI30 BLOCK NAMES UNKNOWN]` for a
+  PI30 device whose dongle labels its blocks differently) at warning level, one-shot per
+  device state, re-arming on a mode or status-bit change.
+- Ported alongside it: the PI30 test suite (`tests/test_pi30_detection.py`,
+  `test_pi30_fields.py`, `test_pi30_frames.py`, 70 tests against a real captured device
+  paired with vendor-portal screenshots), the PI30 fixtures in `tests/captures.py`, and
+  `captures/2026-09-02_device-c-voltronic-pi30.md`.
+
+### Fixed
+
+- **Two test-isolation leaks found by upstream while building the above, ported
+  alongside it.** `tests/test_logging.py` reloaded `loggers` without restoring
+  `CURRENT_LOG_LEVEL` afterwards, so whichever level the last case in that file used kept
+  applying to every test that ran later in the same session -- invisible until a test
+  elsewhere asserted on a warning-level log line while it was in effect. Each case now
+  restores the shipped level in `tearDown`. `TestSignalHandlerInstallation` reloaded
+  `core` without first reloading `config` under a controlled environment, so it could
+  pick up whatever options a previous test's own `config` reload left bound -- now uses
+  `patched_env()`, already present in this fork's `tests/helpers.py`.
+
+Full suite after this change: the same 29 pre-existing failures as 2.6.43 (doc/version/
+pin/anchor checks in `test_packaging.py`, `test_truthfulness::test_every_outcome_has_a_label`),
+none new; 70 new tests pass.
+
+## [2.6.43] - 2026-09-21
+
+### Fixed
+
+- **The BMS max/min cell voltage, their positions and the cell delta no longer publish
+  zeros.** On the reference install (HPVINV04, 16-cell bank) the battery type set on the
+  inverter decides which BMS data set is live, and the two are never live together: with one
+  type `v09K` (cells 1-16) and the remaining capacity are live while the four summary
+  tokens of `uxJp` (max mV, its position, min mV, its position) read `0000`; with the other
+  the summary is live and `v09K` and the remaining capacity repeat their last values. Home
+  Assistant history shows the switches (2026-09-15 15:00 to A, 2026-09-20 about 06:09 back
+  to B). In the first case the bridge published `bms_max_cell_mv`, `bms_min_cell_mv`, both
+  positions and `bms_cell_delta_mv` as 0. A summary is now usable only when both voltages
+  are plausible (2000-5000 mV). When it is not, and the same payload carries at least two
+  valid cells, the five values are computed from those cells (positions count from 1, the
+  first cell wins a tie; what the BMS itself does on a tie is unknown); with no cells they
+  are not published at all. The BMS's own whole-bank summary still wins whenever it is
+  usable, `v09K` alone still writes no summary, and a summary computed from the list
+  describes only the listed cells, which is the whole pack on a 16-cell install. Nothing
+  can make the cells and the summary live at the same time: that is the inverter's choice.
+  New `TestCellSummaryFallback` in `tests/test_truthfulness.py`; DOCS.md Troubleshooting has
+  a matching entry.
+
+## [2.6.42] - 2026-09-21
+
+### Fixed
+
+- **The inverter's answers to the router's pings are now relayed.** The router pings the
+  inverter about every 2.5 s (measured on `end0`). The request always reached the
+  inverter, because router-to-inverter traffic is relayed, but the echo reply is
+  inverter-to-router non-broker traffic and fell into the block that only forwards under
+  `FORWARD_ALL_INVERTER_TRAFFIC`. It was counted in `dropped_non_broker={'OTHER': N}` and
+  discarded, so the router never saw the inverter answer. That block was not a deliberate
+  refusal (SECURITY.md states that every captured packet is re-emitted to its real
+  destination; the drop is the documented "gateway but not a router" limitation), so
+  ICMP echo replies (type 0) are now relayed without any option, under the same
+  layer-2 guard as the opt-in path. Every other non-broker packet, including ICMP echo
+  requests and other ICMP types, is still governed by `FORWARD_ALL_INVERTER_TRAFFIC`.
+
+## [2.6.41] - 2026-09-21
+
+### Changed
+
+- **The local cloud's TCP responder no longer raises a warning for every duplicate
+  segment.** `[LOCAL CLOUD DIAG] ... dropped ... payload discarded` was logged for any
+  data segment that did not land at the expected sequence number. On a healthy session
+  that is mostly the Wi-Fi dongle re-sending a reply whose ACK it has not seen yet
+  (measured over 34 minutes: about 3.4 a minute, 114 of 121 exact duplicates of the last
+  segment, six older duplicates, one gap, no overlap, no stalled poll). `tcpstack.py`
+  now tells the cases apart: a duplicate is logged at debug as `[LOCAL CLOUD DUP]`; a
+  gap (the segment starts beyond the expected byte) and an overlap (it starts before it
+  but reaches past it, carrying new bytes) stay warnings under `[LOCAL CLOUD DIAG]`,
+  with the number of bytes involved. Behaviour on the wire is unchanged: the segment is
+  still discarded and re-ACKed. Covered by the new `tests/test_tcpstack.py`.
+
 ## [2.6.31] - 2026-09-12
 
 ### Fixed
