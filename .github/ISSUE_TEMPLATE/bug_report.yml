@@ -8,7 +8,7 @@ body:
       value: |
         Before filing: entities showing **Unavailable** shortly after they appear is
         almost always the telemetry timeout, and is covered in the
-        [troubleshooting guide](https://github.com/fadmaz/siseli-ha/blob/main/siseli_bridge/DOCS.md#troubleshooting).
+        [troubleshooting guide](https://github.com/siselilocal/siseli-ha/blob/main/siseli_local_bridge/DOCS.md#troubleshooting).
   - type: input
     id: version
     attributes:

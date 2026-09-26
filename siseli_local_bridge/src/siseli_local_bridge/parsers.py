@@ -823,7 +823,7 @@ def _log_debug_block(block_name: str, raw_text: str) -> None:
 PI30_DECODE_NOTE = (
     "this device speaks Voltronic PI30; these values are decoded but not published as "
     "entities yet -- please post this whole block on "
-    "https://github.com/fadmaz/siseli-ha/issues/32 together with a vendor-portal "
+    "https://github.com/siselilocal/siseli-ha/issues together with a vendor-portal "
     "screenshot taken in the same minute"
 )
 

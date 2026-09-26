@@ -6,9 +6,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "siseli-bridge"
+name = "siseli-local-bridge"
 # dependencies is dynamic so the runtime pins live in exactly one file. They used to
-# be listed here AND in siseli_bridge/requirements.txt, held equal by a test --
+# be listed here AND in siseli_local_bridge/requirements.txt, held equal by a test --
 # but Dependabot raises one PR per ecosystem+directory, so it could only ever bump
 # one copy at a time and every dependency PR it opened failed that test by
 # construction. requirements.txt wins because it is the file that ships in the image.
@@ -27,26 +27,26 @@ dev = [
     "ruff",
 ]
 
-# The runtime is launched as `python3 -m src.siseli_bridge.core` from /app, so the
-# import root is siseli_bridge/ and the top-level package is literally `src`.
-# Auto-discovery cannot infer that (siseli_bridge/ has no __init__.py), so it is
+# The runtime is launched as `python3 -m src.siseli_local_bridge.core` from /app, so the
+# import root is siseli_local_bridge/ and the top-level package is literally `src`.
+# Auto-discovery cannot infer that (siseli_local_bridge/ has no __init__.py), so it is
 # declared explicitly -- without this the backend builds an empty wheel.
 [tool.setuptools]
-package-dir = { "" = "siseli_bridge" }
-packages = ["src", "src.siseli_bridge"]
+package-dir = { "" = "siseli_local_bridge" }
+packages = ["src", "src.siseli_local_bridge"]
 
 [tool.setuptools.dynamic]
-version = { attr = "src.siseli_bridge.version.__version__" }
-dependencies = { file = ["siseli_bridge/requirements.txt"] }
+version = { attr = "src.siseli_local_bridge.version.__version__" }
+dependencies = { file = ["siseli_local_bridge/requirements.txt"] }
 
 [tool.pytest.ini_options]
-testpaths = ["siseli_bridge/tests"]
+testpaths = ["siseli_local_bridge/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
 [tool.coverage.run]
-source = ["siseli_bridge/src"]
+source = ["siseli_local_bridge/src"]
 omit = ["*/__pycache__/*", "*/tests/*"]
 
 # Defect-only rule set: every rule here fires on a genuine bug, never on taste, so
@@ -62,6 +62,6 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # The star-imports are load-bearing; unwinding them is a refactor, not a lint fix.
-"siseli_bridge/src/siseli_bridge/core.py" = ["F403", "F405"]
-"siseli_bridge/src/siseli_bridge/mqtt.py" = ["F403", "F405"]
-"siseli_bridge/src/siseli_bridge/parsers.py" = ["F403", "F405"]
+"siseli_local_bridge/src/siseli_local_bridge/core.py" = ["F403", "F405"]
+"siseli_local_bridge/src/siseli_local_bridge/mqtt.py" = ["F403", "F405"]
+"siseli_local_bridge/src/siseli_local_bridge/parsers.py" = ["F403", "F405"]

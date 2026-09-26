@@ -26,9 +26,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # be written here as well, and Dependabot's docker ecosystem only ever bumps the
 # Dockerfile -- so every bot PR left this script building against the superseded base
 # and failed the parity test that existed to notice.
-BUILD_FROM="${BUILD_FROM:-$(sed -n 's/^ARG BUILD_FROM=//p' "$HERE/siseli_bridge/Dockerfile" | head -1)}"
+BUILD_FROM="${BUILD_FROM:-$(sed -n 's/^ARG BUILD_FROM=//p' "$HERE/siseli_local_bridge/Dockerfile" | head -1)}"
 if [[ -z "$BUILD_FROM" ]]; then
-    echo "!!! Could not read ARG BUILD_FROM from siseli_bridge/Dockerfile" >&2
+    echo "!!! Could not read ARG BUILD_FROM from siseli_local_bridge/Dockerfile" >&2
     exit 1
 fi
 
@@ -38,7 +38,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> Building $IMAGE"
-docker build -q -t "$IMAGE" "$HERE/siseli_bridge" --build-arg BUILD_FROM="$BUILD_FROM" >/dev/null
+docker build -q -t "$IMAGE" "$HERE/siseli_local_bridge" --build-arg BUILD_FROM="$BUILD_FROM" >/dev/null
 
 echo "==> Starting container"
 docker run -d --name "$CONTAINER" \
@@ -54,7 +54,7 @@ docker run -d --name "$CONTAINER" \
     -e INVERTER_COUNT=1 -e BATTERY_COUNT=1 -e BATTERY_CAPACITY_PER_BATTERY_AH=0.0 \
     -e LOG_LEVEL=info \
     -e MQTT_RETAIN=true \
-    --entrypoint python3 "$IMAGE" -u -m src.siseli_bridge.core >/dev/null
+    --entrypoint python3 "$IMAGE" -u -m src.siseli_local_bridge.core >/dev/null
 
 # AUTO_INTERCEPT is off on purpose: the point is to reach a running sniffer, not to
 # poison a CI runner's ARP tables.

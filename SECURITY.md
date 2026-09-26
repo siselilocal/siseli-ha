@@ -9,7 +9,7 @@ what it does not do.
 ## Reporting a vulnerability
 
 Use GitHub's private reporting: **[Security → Report a
-vulnerability](https://github.com/fadmaz/siseli-ha/security/advisories/new)**. That opens
+vulnerability](https://github.com/siselilocal/siseli-ha/security/advisories/new)**. That opens
 a private thread visible only to the maintainer.
 
 Please do not open a public issue for a vulnerability. There is no published contact

@@ -200,8 +200,8 @@ identical.
 
 For a value-by-value map against the vendor portal — every block, every token position,
 and the exact list of fields the bridge cannot yet decode — see
-[`sensor_mapping_verified.md`](https://github.com/fadmaz/siseli-ha/blob/main/sensor_mapping_verified.md). An earlier map is kept at
-[`sensor_mapping.md`](https://github.com/fadmaz/siseli-ha/blob/main/sensor_mapping.md).
+[`sensor_mapping_verified.md`](https://github.com/siselilocal/siseli-ha/blob/main/sensor_mapping_verified.md). An earlier map is kept at
+[`sensor_mapping.md`](https://github.com/siselilocal/siseli-ha/blob/main/sensor_mapping.md).
 
 ---
 
@@ -468,7 +468,7 @@ over the blocks actually verifies against the bytes on the wire — so it is evi
 than a guess. `body_shapes` breaks down a mixed payload; a device whose data blocks are one
 family and whose acknowledgements are another will show both.
 
-Please open an [unsupported inverter issue](https://github.com/fadmaz/siseli-ha/issues/new?template=unsupported_inverter.yml)
+Please open an [unsupported inverter issue](https://github.com/siselilocal/siseli-ha/issues/new?template=unsupported_inverter.yml)
 with that line and the `[BLOCK RAW]` output described below. Adding a protocol is real
 work, but it starts with a capture.
 
@@ -524,7 +524,7 @@ inverter's choice, made by the battery type.
 
 Set **Debug Flags** to `blocks` and `unparsed_publish`, and **Log Level** to `info`, for
 about two minutes — then turn them back off, because the output is per-packet. Open an
-issue with the [unsupported inverter template](https://github.com/fadmaz/siseli-ha/blob/main/.github/ISSUE_TEMPLATE/unsupported_inverter.yml)
+issue with the [unsupported inverter template](https://github.com/siselilocal/siseli-ha/blob/main/.github/ISSUE_TEMPLATE/unsupported_inverter.yml)
 and attach the `[BLOCK RAW]` lines.
 
 > **Scrub your log before posting it.** The `topic=` values contain your device serial.

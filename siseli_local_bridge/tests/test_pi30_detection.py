@@ -254,7 +254,7 @@ class TestTheDiagnostic(unittest.TestCase):
 
     def test_the_dump_carries_what_the_reporter_is_asked_for(self):
         text = "\n".join(self._parse(captures.PI30_FRAGMENT_1))
-        self.assertIn("issues/32", text)
+        self.assertIn("siselilocal/siseli-ha/issues", text)
         self.assertIn("grid_v=219.4", text)
         self.assertIn('query="QPIRI"', text)
 

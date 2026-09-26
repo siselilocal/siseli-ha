@@ -54,7 +54,7 @@ offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to
-the maintainer at [@fadmaz](https://github.com/fadmaz). All complaints will be reviewed
+the maintainer at [@siselilocal](https://github.com/siselilocal). All complaints will be reviewed
 and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter

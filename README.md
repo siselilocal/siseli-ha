@@ -1,31 +1,30 @@
-# ☀️ Siseli Inverter Bridge for Home Assistant — now with a 100% local mode
+# ☀️ Siseli Local Bridge for Home Assistant
 
 [![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.63-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
-[![Siseli Inverter Bridge](https://img.shields.io/badge/version-2.6.22-blue.svg?label=Siseli%20Inverter%20Bridge)](siseli_bridge/CHANGELOG.md)
-[![CI](https://github.com/fadmaz/siseli-ha/actions/workflows/ci.yml/badge.svg)](https://github.com/fadmaz/siseli-ha/actions/workflows/ci.yml)
 [![HA Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-green.svg)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
-<img src="siseli_bridge/icon.png" alt="" width="140" align="right">
+<img src="siseli_local_bridge/icon.png" alt="" width="140" align="right">
 
-A Home Assistant add-on that reads your Siseli-compatible solar inverter **locally**, by
-decoding the telemetry it already sends to the vendor cloud — and publishes it to Home
-Assistant through MQTT auto-discovery.
+A Home Assistant add-on that reads your Siseli-compatible solar inverter **locally** and
+publishes it to Home Assistant through MQTT auto-discovery. It runs in one of two modes:
 
-Your inverter keeps talking to the cloud, so the official mobile app carries on working.
-The bridge only listens in.
+- **Pass-through** — the dongle keeps talking to the vendor cloud and the official app
+  keeps working; the add-on decodes the telemetry on its way.
+- **100% local** — the add-on **replaces the vendor cloud**: the dongle only talks to your
+  Home Assistant host, readings refresh every 15 seconds, and the inverter's settings
+  become Home Assistant controls. See [100% local mode](#100-local-mode).
 
-**207 sensors across 7 devices**, 143 enabled on a fresh install. No cloud API, no
-polling, no credentials for anything but your own broker.
+**205 sensors across 7 devices**, 144 enabled on a fresh install, plus the controls of
+the 100% local mode.
 
-> **Acknowledgment:** an expanded and generalized fork of the original work at
+> **Acknowledgment:** a fork of [fadmaz/siseli-ha](https://github.com/fadmaz/siseli-ha)
+> and its **Siseli Inverter Bridge**, itself an expanded fork of
 > [yuraantonov11/siseli-ha](https://github.com/yuraantonov11/siseli-ha). Huge thanks to
-> the original author.
-
-> **New: 100% local mode.** This repository also ships **Siseli Local Bridge**, which can
-> replace the vendor cloud entirely: the WiFi dongle talks only to your Home Assistant
-> host, telemetry refreshes every 15 seconds, and the inverter's settings can be changed
-> from Home Assistant. See [Siseli Local Bridge — 100% local mode](#siseli-local-bridge--100-local-mode).
+> both authors. If you only want to **listen** to your inverter, never send it anything,
+> and keep the vendor cloud in the loop, use Siseli Inverter Bridge from
+> [fadmaz/siseli-ha](https://github.com/fadmaz/siseli-ha) — that is exactly what it is
+> built for.
 
 ---
 
@@ -34,20 +33,20 @@ polling, no credentials for anything but your own broker.
 **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, then add:
 
 ```
-https://github.com/fadmaz/siseli-ha
+https://github.com/siselilocal/siseli-ha
 ```
 
-Install **Siseli Inverter Bridge**, then follow
-**[the documentation](siseli_bridge/DOCS.md)** — requirements, every configuration
-option, network setup and troubleshooting. Home Assistant renders that same page on the
-add-on's **Documentation** tab once it is installed.
+Install **Siseli Local Bridge** (and **Network IP Alias** if you want the 100% local
+mode), then follow **[the documentation](siseli_local_bridge/DOCS.md)** — requirements,
+every configuration option, network setup and troubleshooting. Home Assistant renders
+that same page on the add-on's **Documentation** tab once it is installed.
 
 ---
 
-## How it works
+## How it works (pass-through)
 
 Your inverter's WiFi dongle publishes telemetry over MQTT to the Siseli cloud at
-`8.212.18.157:1883`. The add-on:
+`8.212.18.157:1883`. In pass-through mode the add-on:
 
 1. **Puts itself in the path** using ARP interception, so the inverter's packets reach
    the Home Assistant host.
@@ -57,8 +56,8 @@ Your inverter's WiFi dongle publishes telemetry over MQTT to the Siseli cloud at
 4. **Publishes to your broker** with MQTT auto-discovery, so entities appear on their own.
 5. **Forwards the traffic onward** to the cloud, unchanged.
 
-It never terminates a connection and never opens a listening socket. It observes, decodes,
-and relays.
+In this mode it never terminates a connection and never opens a listening socket. It
+observes, decodes, and relays.
 
 **What this means in practice:** if the add-on stops, your inverter keeps working and the
 vendor app keeps working. You lose the Home Assistant sensors, nothing else.
@@ -67,7 +66,7 @@ vendor app keeps working. You lose the Home Assistant sensors, nothing else.
 
 ## Known limitations
 
-**45 of the 207 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
+**42 of the 205 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
 with hardcoded constants — fault flags that could never report a fault, a `Mode` that was
 a fixed string in the source. Those were removed in 2.6.1. The entities remain, disabled
 by default, and publish an explicit "no value" rather than a comforting lie. If your
@@ -75,7 +74,7 @@ inverter emits blocks that would decode them, an issue with a capture is welcome
 
 If instead *every* sensor reads `Unknown`, that is a different situation entirely: your
 inverter speaks a protocol this add-on does not decode. The log says so in one line —
-see [Every sensor reads Unknown](https://github.com/fadmaz/siseli-ha/blob/main/siseli_bridge/DOCS.md#every-sensor-reads-unknown).
+see [Every sensor reads Unknown](siseli_local_bridge/DOCS.md#every-sensor-reads-unknown).
 
 **Two current sources disagree, and there is no way to tell which is right.** The BMS and
 the inverter's own ammeter can differ by a factor of two or more, in either direction. The
@@ -98,34 +97,30 @@ Anything using the Siseli IoT cloud platform, which includes inverters sold as:
 Solar of Things · LUMINOUS NEO · SUN WISE · Queen Tech · LIB Life · Sun house · LeiLing ·
 SunSaviour · ECOmenic · HC solar · 沐能低碳 · PowMr · Taico
 
-**Verified in detail:** one device — `HPVINV04`, firmware `0010.11`, two inverters in
-parallel with a 32-cell battery bank. Its captures are byte-faithful fixtures in the test
-suite, and the decoded values are checked against the official app.
+**Verified in detail:**
+
+- **Pass-through decoding** — upstream's reference device: `HPVINV04`, firmware `0010.11`,
+  two inverters in parallel with a 32-cell battery bank. Its captures are byte-faithful
+  fixtures in the test suite, and the decoded values are checked against the official app.
+- **100% local mode and the controls** — a Datouboss 11 kW (`HPVINV04`, firmware
+  `0010.14`) with a WattCycle 48 V battery; see
+  [Hardware used for the 100% local tests](#hardware-used-for-the-100-local-tests).
 
 Other brands on that list are reported to work but are not covered by captures. If you
 have one, a debug capture is the single most useful contribution you can make — see
-[Troubleshooting](siseli_bridge/DOCS.md#your-inverter-is-not-decoded).
+[Troubleshooting](siseli_local_bridge/DOCS.md#your-inverter-is-not-decoded).
 
 ---
 
 ---
 
-## Siseli Local Bridge — 100% local mode
+## 100% local mode
 
-**Siseli Local Bridge** is the second add-on in this repository. It decodes the same
-telemetry as Siseli Inverter Bridge, and it can run in one of two modes:
-
-- **Pass-through** (default, `LOCAL_CLOUD_IP` left empty) — it listens in exactly like
-  Siseli Inverter Bridge: the dongle still talks to the vendor cloud and the official app
-  keeps working.
-- **100% local** (`LOCAL_CLOUD_IP` set) — it **impersonates the vendor cloud** on a spare
-  IP address of your Home Assistant host. The dongle never reaches the internet, the
-  bridge asks it for a full reading every 15 seconds instead of waiting for its own
-  5-minute push, and the inverter's settings become Home Assistant controls.
-
-**205 sensors across 7 devices**, 144 enabled on a fresh install, plus the controls listed
-below. **42 of the 205 sensors read `Unknown`** and cannot be decoded; like the original
-add-on, they stay disabled and publish no value rather than a made-up one.
+With `LOCAL_CLOUD_IP` set, the add-on **impersonates the vendor cloud** on a spare IP
+address of your Home Assistant host. The dongle never reaches the internet, the bridge
+asks it for a full reading every 15 seconds instead of waiting for its own 5-minute push,
+and the inverter's settings become Home Assistant controls. Pass-through stays the default
+(`LOCAL_CLOUD_IP` left empty).
 
 **Trade-off of the 100% local mode:** the vendor cloud no longer hears from the dongle, so
 the official app shows the inverter offline. To use the app again, go back to
@@ -295,7 +290,7 @@ no local connection to send them on, and the sensors fall back to the dongle's o
 Development setup, test conventions, how to add a capture from your own inverter, and the
 release checklist are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-Release history is in [`siseli_bridge/CHANGELOG.md`](siseli_bridge/CHANGELOG.md), which
+Release history is in [`siseli_local_bridge/CHANGELOG.md`](siseli_local_bridge/CHANGELOG.md), which
 Home Assistant also renders on the add-on's **Changelog** tab.
 
 Bug reports: use the [issue templates](.github/ISSUE_TEMPLATE/). Always include your

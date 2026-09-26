@@ -1,8 +1,8 @@
 # Architecture
 
-Anchors: a bare `core.py:N` means `siseli_bridge/src/siseli_bridge/core.py`; `tests/x.py:N` means `siseli_bridge/tests/x.py`. Line numbers are for 2.6.19 (commit `2851d8e`).
+Anchors: a bare `core.py:N` means `siseli_local_bridge/src/siseli_local_bridge/core.py`; `tests/x.py:N` means `siseli_local_bridge/tests/x.py`. Line numbers are for 2.6.19 (commit `2851d8e`).
 
-`TestArchitectureDocAnchors` in `siseli_bridge/tests/test_packaging.py` checks these: every cited file must exist, every line must be inside it, and wherever the prose names a backticked symbol before a citation, that symbol must be defined on the cited line. What it cannot check is a citation pointing at a statement rather than a definition — roughly half of them — so treat those as approximate and re-read before relying on one. Half the anchors here had drifted within a day of first being written, which is why the test exists.
+`TestArchitectureDocAnchors` in `siseli_local_bridge/tests/test_packaging.py` checks these: every cited file must exist, every line must be inside it, and wherever the prose names a backticked symbol before a citation, that symbol must be defined on the cited line. What it cannot check is a citation pointing at a statement rather than a definition — roughly half of them — so treat those as approximate and re-read before relying on one. Half the anchors here had drifted within a day of first being written, which is why the test exists.
 
 ## What this is
 
@@ -17,20 +17,20 @@ Block positions were reverse-engineered from one device with no schema, so the g
 
 | Path | What it is | One non-obvious fact |
 |---|---|---|
-| `siseli_bridge/` | The add-on: Docker build context, manifest, runtime, tests | It is the *only* thing that reaches the image (`siseli_bridge/Dockerfile:24` `COPY . .`, `scripts/smoke-test.sh:30`); root-level docs and `captures/` never ship |
-| `siseli_bridge/src/siseli_bridge/` | The runtime, eight modules | The package path is `src.siseli_bridge` because `run.sh:46` execs `python3 -m src.siseli_bridge.core`; tests patch `src.siseli_bridge.<module>` |
-| `siseli_bridge/tests/` | 11 test files, `helpers.py`, `captures.py`, `conftest.py` | Excluded from the image (`siseli_bridge/.dockerignore:10`); `conftest.py` puts `siseli_bridge/` on `sys.path` so imports mirror the runtime path |
-| `siseli_bridge/config.yaml`, `Dockerfile`, `run.sh`, `requirements.txt`, `.dockerignore`, `icon.png`, `logo.png` | Add-on manifest and build inputs | `config.yaml` has no `image:` key and there is no `build.yaml`, so Supervisor builds locally from the Dockerfile (`tests/test_packaging.py:428-433`) |
-| `siseli_bridge/DOCS.md`, `siseli_bridge/CHANGELOG.md` | The HA Documentation tab and Changelog tab | Only `CHANGELOG.md` ships in the image (`.dockerignore:28-29`); Supervisor reads `DOCS.md` from the repo checkout |
-| `siseli_bridge/translations/en.yaml` | UI labels for every option | Its key set must equal the schema's (`tests/test_packaging.py:94`) |
+| `siseli_local_bridge/` | The add-on: Docker build context, manifest, runtime, tests | It is the *only* thing that reaches the image (`siseli_local_bridge/Dockerfile:24` `COPY . .`, `scripts/smoke-test.sh:30`); root-level docs and `captures/` never ship |
+| `siseli_local_bridge/src/siseli_local_bridge/` | The runtime, eight modules | The package path is `src.siseli_local_bridge` because `run.sh:46` execs `python3 -m src.siseli_local_bridge.core`; tests patch `src.siseli_local_bridge.<module>` |
+| `siseli_local_bridge/tests/` | 11 test files, `helpers.py`, `captures.py`, `conftest.py` | Excluded from the image (`siseli_local_bridge/.dockerignore:10`); `conftest.py` puts `siseli_local_bridge/` on `sys.path` so imports mirror the runtime path |
+| `siseli_local_bridge/config.yaml`, `Dockerfile`, `run.sh`, `requirements.txt`, `.dockerignore`, `icon.png`, `logo.png` | Add-on manifest and build inputs | `config.yaml` has no `image:` key and there is no `build.yaml`, so Supervisor builds locally from the Dockerfile (`tests/test_packaging.py:428-433`) |
+| `siseli_local_bridge/DOCS.md`, `siseli_local_bridge/CHANGELOG.md` | The HA Documentation tab and Changelog tab | Only `CHANGELOG.md` ships in the image (`.dockerignore:28-29`); Supervisor reads `DOCS.md` from the repo checkout |
+| `siseli_local_bridge/translations/en.yaml` | UI labels for every option | Its key set must equal the schema's (`tests/test_packaging.py:94`) |
 | `.github/` | CI workflow, dependabot, issue and PR templates | The seven CI check names are branch-protection requirements on `main`; nothing in the checkout says so except `tests/test_packaging.py:263-305` |
 | `scripts/smoke-test.sh` | Build the image and wait for a running sniffer | Bypasses `run.sh` (`:46` overrides the entrypoint) and runs with `AUTO_INTERCEPT=false` (`:39`), so no ARP frame is ever sent under CI |
 | `captures/` | Paired bridge-log / vendor-portal readings of the same device at the same second | `tests/captures.py` proves the parser does not regress; `captures/` is the only evidence that a decode is *correct* (`captures/README.md:19-24`) |
 | `sensor_mapping_verified.md`, `sensor_mapping.md` | Per-token decode map for HPVINV04; the superseded 2.6.0 map | The verified file supersedes its own tables: Section 0 (`:25-124`) is the simultaneous reading, the later tables were 17 minutes apart (`:18-21`) |
 | `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md` | GitHub landing page, dev procedure, security posture, conduct | `README.md` may use relative links; `DOCS.md` may not (`tests/test_packaging.py:227-234`). `SECURITY.md:30-32` states that a wrong `INVERTER_IP` poisons the wrong host by design |
-| `CHANGELOG.md` (root) | A nine-line pointer | Must not carry any `## [N` heading (`tests/test_packaging.py:51-56`); the canonical history is `siseli_bridge/CHANGELOG.md` |
+| `CHANGELOG.md` (root) | A nine-line pointer | Must not carry any `## [N` heading (`tests/test_packaging.py:51-56`); the canonical history is `siseli_local_bridge/CHANGELOG.md` |
 | `LICENSE`, `NOTICE` | MIT; scope statement | Upstream `yuraantonov11/siseli-ha` carries no licence, so the MIT grant covers only work done here (`NOTICE:3-16`) |
-| `pyproject.toml`, `repository.yaml` | Dev/CI packaging; the add-on repository manifest | `pyproject.toml:30-36` declares the top-level package as literally `src` because `siseli_bridge/` has no `__init__.py` |
+| `pyproject.toml`, `repository.yaml` | Dev/CI packaging; the add-on repository manifest | `pyproject.toml:30-36` declares the top-level package as literally `src` because `siseli_local_bridge/` has no `__init__.py` |
 | `CLAUDE.md` | Local agent notes | Untracked by design (`.gitignore:39`) |
 | `docs/` | This file | Not read by any test |
 
@@ -52,7 +52,7 @@ Block positions were reverse-engineered from one device with no schema, so the g
 ### Packet-to-publish data path
 
 ```
-run.sh:46  exec python3 -m src.siseli_bridge.core
+run.sh:46  exec python3 -m src.siseli_local_bridge.core
    |
 core.py:580-622  validate_config -> signal handlers -> load_cached_state -> seed SENSORS to None
    |             -> start_mqtt -> ARP thread -> health_logger thread -> AsyncSniffer(filter "ip host INVERTER_IP")
@@ -138,7 +138,7 @@ Consequences:
 
 ## Packaging and CI
 
-**How HA installs it**: the user adds the repo URL; Supervisor reads `repository.yaml` and `siseli_bridge/config.yaml`. With no `image:` key and no `build.yaml` (`tests/test_packaging.py:428-433`), Supervisor builds `siseli_bridge/Dockerfile` on the user's machine: `ARG BUILD_FROM=ghcr.io/hassio-addons/base:14.0.0` (`:1-2`, a multi-arch manifest, which is what makes a local aarch64 build work), `apk add python3 py3-pip libpcap-dev dos2unix iproute2` (`:14`), `COPY . .` (`:24`), `dos2unix run.sh` (`:27`, the only CRLF defence), `CMD ["./run.sh"]` (`:29`). `run.sh` turns every option into an env var and `exec`s Python (`:46`) so signals reach `core.py`'s handlers; `init: false` (`config.yaml:6`). Privileges: `host_network`, `NET_ADMIN`+`NET_RAW`, `apparmor: false` (`config.yaml:10-14`; reasons in `SECURITY.md:45-50`).
+**How HA installs it**: the user adds the repo URL; Supervisor reads `repository.yaml` and `siseli_local_bridge/config.yaml`. With no `image:` key and no `build.yaml` (`tests/test_packaging.py:428-433`), Supervisor builds `siseli_local_bridge/Dockerfile` on the user's machine: `ARG BUILD_FROM=ghcr.io/hassio-addons/base:14.0.0` (`:1-2`, a multi-arch manifest, which is what makes a local aarch64 build work), `apk add python3 py3-pip libpcap-dev dos2unix iproute2` (`:14`), `COPY . .` (`:24`), `dos2unix run.sh` (`:27`, the only CRLF defence), `CMD ["./run.sh"]` (`:29`). `run.sh` turns every option into an env var and `exec`s Python (`:46`) so signals reach `core.py`'s handlers; `init: false` (`config.yaml:6`). Privileges: `host_network`, `NET_ADMIN`+`NET_RAW`, `apparmor: false` (`config.yaml:10-14`; reasons in `SECURITY.md:45-50`).
 
 **Supervisor pins stored options.** Every option's value is stored the first time the user saves the configuration page and shadows the shipped default forever (`config.py:76-79`). Supervisor also validates *stored* options against the *new* schema before an update, so removing an option or tightening a pattern blocks the upgrade; a trailing `?` means the key may be absent, not that `''` passes (`tests/test_packaging.py:570-642` replays a real stored configuration). `LISTEN_PORT` and `LOG_VERBOSE` therefore stay in the schema and are read only to warn (`config.py:157`, `:279-291`; `tests/test_packaging.py:474-502`).
 
@@ -155,13 +155,13 @@ Consequences:
 
 There is no separate docker build job; smoke builds first (`:98`). **Branch protection on `main` requires exactly those seven check names**, derived by GitHub from job id plus every matrix value, so bumping `runner: ubuntu-24.04` alone renames a check and blocks every PR with no error naming the cause. `tests/test_packaging.py:263-305` pins the derived set; the protection rule must be edited in the same change.
 
-**Pins are written twice**: `pyproject.toml:17-20` (what CI installs) and `siseli_bridge/requirements.txt` (what the image installs) must agree, and `Dockerfile:1` must equal `scripts/smoke-test.sh:18` (`tests/test_packaging.py:436-471`). Dependabot is registered for both pip roots and for docker (`.github/dependabot.yml:8-26`), so each single-file bot PR fails CI until a human lands the pair; this is the documented intent.
+**Pins are written twice**: `pyproject.toml:17-20` (what CI installs) and `siseli_local_bridge/requirements.txt` (what the image installs) must agree, and `Dockerfile:1` must equal `scripts/smoke-test.sh:18` (`tests/test_packaging.py:436-471`). Dependabot is registered for both pip roots and for docker (`.github/dependabot.yml:8-26`), so each single-file bot PR fails CI until a human lands the pair; this is the documented intent.
 
-**Version** lives in four files that must agree in one commit: `version.py:7`, `config.yaml:3`, the `README.md:3` badge, and the first `## [x.y.z]` heading in `siseli_bridge/CHANGELOG.md` (`tests/test_packaging.py:24-50`). `run.sh` may not print one (`:57-67`).
+**Version** lives in four files that must agree in one commit: `version.py:7`, `config.yaml:3`, the `README.md:3` badge, and the first `## [x.y.z]` heading in `siseli_local_bridge/CHANGELOG.md` (`tests/test_packaging.py:24-50`). `run.sh` may not print one (`:57-67`).
 
 ## Documentation
 
-The split is by render target, not topic (`CONTRIBUTING.md:3-7`): `README.md` is the GitHub landing page only; `siseli_bridge/DOCS.md` is what Supervisor renders on the add-on's Documentation tab; `CONTRIBUTING.md` is developer procedure. It was created in 2.6.13 by reversing 2.5.0, which had merged `DOCS.md` into the README and left the tab empty (`siseli_bridge/CHANGELOG.md:155-160`).
+The split is by render target, not topic (`CONTRIBUTING.md:3-7`): `README.md` is the GitHub landing page only; `siseli_local_bridge/DOCS.md` is what Supervisor renders on the add-on's Documentation tab; `CONTRIBUTING.md` is developer procedure. It was created in 2.6.13 by reversing 2.5.0, which had merged `DOCS.md` into the README and left the tab empty (`siseli_local_bridge/CHANGELOG.md:155-160`).
 
 Tests holding it (`tests/test_packaging.py`):
 
@@ -187,7 +187,7 @@ which needs a second of wall time has to run on the main thread.
 Fix: have `health_logger` or the main loop check `sniffer.running` and either restart the sniffer or clear `RUNNING` so the container exits and Supervisor restarts it. The smoke test cannot catch this; its ready marker is the same log line (`scripts/smoke-test.sh:20`).
 
 **2. The `INVERTER_COUNT` scaling basis is unproven.**
-`_scale_main_power` (`parsers.py:1230`) multiplies load, mains and generation power by `INVERTER_COUNT` (`:1316`, `:1387`, `:1581`), the factor also enters grid import (`:863`) and the legacy battery current (`:744`, `:768`), and all of it feeds five monotonic kWh counters (`:772-778`) that persist across restarts (`:1974` -> `core.py:140`). Whether the inverter's blocks carry per-unit or system figures is recorded as the top open question in `captures/README.md:64-66` and `captures/2026-08-21_2341_discharging.md:108-122`, yet `DOCS.md:209` says "per-unit figures" flatly and `siseli_bridge/CHANGELOG.md:259` calls the 11 kW nameplate confirmed. The proposed 24-hour `c_generation_energy_kwh` vs `pv_today_kwh` ratio (`CHANGELOG.md:237`) cannot discriminate, because both derive from the same device's blocks (`parsers.py:1572-1581`, `:1187-1188`). The shipped default `INVERTER_COUNT: 1` (`config.yaml:38`) is unaffected, and the night-time efficiency figure (89.6 %) leans the code's way.
+`_scale_main_power` (`parsers.py:1230`) multiplies load, mains and generation power by `INVERTER_COUNT` (`:1316`, `:1387`, `:1581`), the factor also enters grid import (`:863`) and the legacy battery current (`:744`, `:768`), and all of it feeds five monotonic kWh counters (`:772-778`) that persist across restarts (`:1974` -> `core.py:140`). Whether the inverter's blocks carry per-unit or system figures is recorded as the top open question in `captures/README.md:64-66` and `captures/2026-08-21_2341_discharging.md:108-122`, yet `DOCS.md:209` says "per-unit figures" flatly and `siseli_local_bridge/CHANGELOG.md:259` calls the 11 kW nameplate confirmed. The proposed 24-hour `c_generation_energy_kwh` vs `pv_today_kwh` ratio (`CHANGELOG.md:237`) cannot discriminate, because both derive from the same device's blocks (`parsers.py:1572-1581`, `:1187-1188`). The shipped default `INVERTER_COUNT: 1` (`config.yaml:38`) is unaffected, and the night-time efficiency figure (89.6 %) leans the code's way.
 Status: **open question — still open.** The docs no longer state the basis as fact (2.6.19); the
 question itself is unresolved and only a rating plate or a clamp meter settles it.
 Settle: a rating-plate photo or a clamp-meter reading on the maintainer's install at night with PV = 0; soften `DOCS.md:209` until then.

@@ -1,7 +1,7 @@
 # Contributing
 
 This file covers development setup, test conventions, how to contribute a capture from
-your own inverter, and the release checklist. `siseli_bridge/DOCS.md` covers
+your own inverter, and the release checklist. `siseli_local_bridge/DOCS.md` covers
 installation and configuration for users -- Home Assistant renders it on the add-on's
 **Documentation** tab, so it must never carry a version literal or it becomes a fifth
 place for the version to drift. `README.md` is the project's landing page.
@@ -12,31 +12,31 @@ Keep this file current — a stale entry here is worse than none, because it is 
 
 ```bash
 pip install -e ".[dev]"
-pip install -r siseli_bridge/requirements.txt
+pip install -r siseli_local_bridge/requirements.txt
 ```
 
 `scapy` needs libpcap headers (`sudo apt-get install libpcap-dev` on Debian/Ubuntu).
 Without scapy installed, `core.py` cannot be imported and its tests will error.
 
-Note the runtime import root is `siseli_bridge/`, so the top-level package is
-literally `src` and modules are imported as `src.siseli_bridge.*`. That mirrors how
-the add-on starts (`python3 -m src.siseli_bridge.core` from `/app`) and is why
+Note the runtime import root is `siseli_local_bridge/`, so the top-level package is
+literally `src` and modules are imported as `src.siseli_local_bridge.*`. That mirrors how
+the add-on starts (`python3 -m src.siseli_local_bridge.core` from `/app`) and is why
 `pyproject.toml` declares `package-dir` explicitly — auto-discovery finds nothing,
-because `siseli_bridge/` has no `__init__.py`.
+because `siseli_local_bridge/` has no `__init__.py`.
 
 ## Running the checks
 
 ```bash
-pytest siseli_bridge/tests -q
+pytest siseli_local_bridge/tests -q
 ruff check .
 ```
 
 Coverage floors, matching CI:
 
 ```bash
-pytest siseli_bridge/tests --cov=siseli_bridge/src --cov-report=
+pytest siseli_local_bridge/tests --cov=siseli_local_bridge/src --cov-report=
 python -m coverage report --fail-under=78
-python -m coverage report --include="*/siseli_bridge/mqtt.py,*/siseli_bridge/core.py" --fail-under=65
+python -m coverage report --include="*/siseli_local_bridge/mqtt.py,*/siseli_local_bridge/core.py" --fail-under=65
 ```
 
 A smoke test starts the built image and waits for it to report a running sniffer:
@@ -70,7 +70,7 @@ Two rules that are easy to get wrong:
 1. **Patch config constants on the *consuming* module.** `core.py`, `mqtt.py` and
    `parsers.py` all do `from .config import *`, so they hold bound copies. Reloading
    `config.py` does not change them. Use
-   `patch_consts("src.siseli_bridge.parsers", INVERTER_COUNT=2)`.
+   `patch_consts("src.siseli_local_bridge.parsers", INVERTER_COUNT=2)`.
 2. **Wrap anything that touches module globals in `isolated_state()`.** `LAST_STATE`,
    `FLOW_STATES`, `LAST_ENERGY_TS` and friends leak between tests otherwise, and the
    failure shows up as an unrelated test failing depending on run order.
@@ -112,8 +112,8 @@ assertions — a synthetic block proves nothing about what a device actually emi
 The version has one source of truth and two copies of it, because Supervisor reads
 `config.yaml` directly and cannot import Python:
 
-- `siseli_bridge/src/siseli_bridge/version.py` — the source of truth
-- `siseli_bridge/config.yaml` — what Supervisor reads
+- `siseli_local_bridge/src/siseli_local_bridge/version.py` — the source of truth
+- `siseli_local_bridge/config.yaml` — what Supervisor reads
 - the README badge and the changelog heading
 
 Nothing else may carry a version literal. `run.sh` used to print one and it froze two
@@ -126,7 +126,7 @@ the top of the add-on changelog all agree. The failure mode it exists to prevent
 asymmetric: if `config.yaml` lags, Supervisor never offers the update while the log
 claims the new version is running.
 
-A release is a single commit touching: `siseli_bridge/CHANGELOG.md` (the canonical
+A release is a single commit touching: `siseli_local_bridge/CHANGELOG.md` (the canonical
 one -- the root file is just a pointer), `version.py`, `config.yaml`, and the README
 badge.
 
