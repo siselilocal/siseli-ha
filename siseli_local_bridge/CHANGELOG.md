@@ -2,6 +2,65 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.73] - 2026-09-27
+
+### Removed
+
+- **The 2.6.72 "Battery Charge/Discharge (test)" select.** `PBATCD000` was
+  sent twice and never answered, not even with `(NAK`, while telemetry kept
+  flowing: this firmware does not take PI30MAX `PBATCD`.
+## [2.6.72] - 2026-09-27
+
+### Added
+
+- **Test: "Battery Charge/Discharge (test)" select**, PI30MAX `PBATCD<abc>`.
+  Only "Normal" (`PBATCD000`, clears any forcing) for now, to learn whether
+  this firmware takes the command. No read-back command is documented.
+## [2.6.71] - 2026-09-27
+
+### Removed
+
+- **The 2.6.70 "Solar Feed To Grid" test switch.** The inverter answered
+  `PDd` with `(NAKss`: this firmware does not take PI30MAX flag `d`, which
+  its `QFLAG` answer never lists either. Programme 44 stays read-only through
+  the "Solar Feed To Grid" sensor (93VQ token 18).
+## [2.6.70] - 2026-09-27
+
+### Added
+
+- **Test: "Solar Feed To Grid" switch (Programme 44).** PI30MAX documents flag
+  `d` (`PEd` / `PDd`) as "solar feed to grid (reserved feature)"; this
+  inverter's `QFLAG` answer does not list `d`, so it is unproven. Read back
+  from 93VQ token 18. Removed again if the inverter refuses it.
+## [2.6.69] - 2026-09-27
+
+### Fixed
+
+- **93VQ token 18 is Programme 44 (solar energy feed to grid), not the AC
+  charger's start hour.** Switching Programme 44 to `GtE` on the front panel
+  moved it 0 -> 1 in the next reading and back to 0 with `GtD`; nothing else
+  moved, `grid_connection_function` included. New sensor "Solar Feed To
+  Grid" (Disabled / Enabled) replaces `mains_charging_starting_time`. Token 19
+  (`mains_charging_ending_time`), labelled by the same guess, is no longer
+  decoded and joins the undecoded sensors. No control: the vendor app has no
+  Programme 44 setting and its command is unknown.
+## [2.6.68] - 2026-09-27
+
+### Added
+
+- **"Max Charging Current" number (Programme 02, total solar + utility
+  charge current), with read-back.** Captured from the vendor app:
+  `MNCHGC` + 3 digits in amps (`MNCHGC050`, `MNCHGC060` answered
+  `(ACK9`; 58, 59, 61 and 62 A answered `(NAKss`). 10-150 A in 10 A steps
+  (the manual's range for the 11 kW model; the app shows none). Read back from
+  93VQ token 1 (`maximum_total_charging_current_a`). The battery's BMS still
+  limits the charge to its own maximum.
+
+### Not added
+
+- Programmes 24, 26, 27 and 29 (battery voltages): the battery type
+  (Programme 05) sets them. With a BMS battery type the inverter refuses any
+  change (Programme 24 answered `(NAKss` to every value on 2026-09-26).
 ## [2.6.67] - 2026-09-27
 
 ### Added

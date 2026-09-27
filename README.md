@@ -1,6 +1,6 @@
 # ☀️ Siseli Local Bridge for Home Assistant
 
-[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.67-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
+[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.73-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
 [![HA Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-green.svg)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
@@ -15,7 +15,7 @@ publishes it to Home Assistant through MQTT auto-discovery. It runs in one of tw
   Home Assistant host, readings refresh every 15 seconds, and the inverter's settings
   become Home Assistant controls. See [100% local mode](#100-local-mode).
 
-**205 sensors across 7 devices**, 147 enabled on a fresh install, plus the controls of
+**205 sensors across 7 devices**, 146 enabled on a fresh install, plus the controls of
 the 100% local mode.
 
 > **Acknowledgment:** a fork of [fadmaz/siseli-ha](https://github.com/fadmaz/siseli-ha)
@@ -66,7 +66,7 @@ vendor app keeps working. You lose the Home Assistant sensors, nothing else.
 
 ## Known limitations
 
-**39 of the 205 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
+**40 of the 205 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
 with hardcoded constants — fault flags that could never report a fault, a `Mode` that was
 a fixed string in the source. Those were removed in 2.6.1. The entities remain, disabled
 by default, and publish an explicit "no value" rather than a comforting lie. If your
@@ -225,6 +225,7 @@ and 25 appear in no telemetry block, so the add-on asks the inverter's flag stat
 | Control | Manual programme | Values |
 |---|---|---|
 | Output Source Priority | 01 | SBU / SUB |
+| Max Charging Current (solar + utility) | 02 | 10–150 A, steps of 10 |
 | Grid Working Range | 03 | UPS / Appliance |
 | Battery Type | 05 | AGM … Growatt, Pylontech, … (10 types) |
 | Overload Automatic Restart | 06 | on / off |
@@ -254,7 +255,9 @@ and 25 appear in no telemetry block, so the add-on asks the inverter's flag stat
 
 Plus a **BMS Communication Normal** sensor: when it reads `No`, the inverter has lost its
 BMS and the state of charge it reports is its own estimate (it read 99–100 % against a
-real 43 % in testing), so SOC-based automations should check it first.
+real 43 % in testing), so SOC-based automations should check it first. A **Solar Feed To Grid**
+sensor shows programme 44 (`GtD` / `GtE`); it can only be changed on the front panel, the
+inverter refuses the documented command.
 
 To keep the inverter's clock right, press **Sync Inverter Clock** from a daily automation
 (`button.press` at 03:00, for example).

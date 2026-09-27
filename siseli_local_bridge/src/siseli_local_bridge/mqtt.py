@@ -295,6 +295,7 @@ _CONTROL_NUMBERS = {
     "back_to_battery_voltage": ("Back To Battery Voltage", "mdi:battery-arrow-up"),
     "equalization_voltage": ("Equalization Voltage", "mdi:battery-sync"),
     "grid_tie_current": ("Grid-Tie Current", "mdi:transmission-tower-export"),  # Programme 56
+    "max_charging_current": ("Max Charging Current", "mdi:battery-charging-high"),  # Programme 02
 }
 
 
@@ -380,6 +381,12 @@ _CONTROL_TELEMETRY_STATE = {
     "grid_tie_current": {
         "group": get_sensor_group("grid_connected_current_a"),
         "value_template": "{{ value_json.grid_connected_current_a }}",
+    },
+    # Programme 02: 93VQ token 1 (060 = the factory 60 A). To be confirmed by
+    # a change from Home Assistant: the app's 50 A lasted no read-back.
+    "max_charging_current": {
+        "group": get_sensor_group("maximum_total_charging_current_a"),
+        "value_template": "{{ value_json.maximum_total_charging_current_a }}",
     },
     # 93VQ token 0, aux pack digit 2 and config pack digit 3: each moved to the
     # exact value sent (POP01, PCP02, PVENGUSE01) on 2026-09-26 and matched the

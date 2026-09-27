@@ -2097,7 +2097,7 @@ class SolarParser:
                 state["second_delay_time"] = sec_delay
         # vals[14] was previously written to BOTH mains_charging_starting_time and
         # mains_charging_ending_time -- one token cannot be two different times.
-        # 93VQ[18] and 93VQ[19] carry them separately and are the sole writers now.
+        # Neither is written from here (93VQ[18] turned out to be Programme 44).
         if len(vals) >= 16:
             second_batt_v = SolarParser._to_float(vals[15])
             if second_batt_v is not None:
@@ -2250,13 +2250,14 @@ class SolarParser:
                 state["low_electric_lock_voltage_v"] = round(low_lock_v, 1)
             if grid_current is not None:
                 state["grid_connected_current_a"] = grid_current
-        if len(vals) >= 20:
-            start_time = SolarParser._format_hour_token(vals[18])
-            end_time = SolarParser._format_hour_token(vals[19])
-            if start_time is not None:
-                state["mains_charging_starting_time"] = start_time
-            if end_time is not None:
-                state["mains_charging_ending_time"] = end_time
+        if len(vals) >= 19:
+            # 93VQ[18] = Programme 44, solar energy feed to grid (GtD / GtE), not
+            # the AC charger's start hour it was labelled as: 2026-09-27, switching
+            # 44 to GtE on the front panel moved it 0 -> 1 in the next reading and
+            # back to 0 with GtD, and nothing else moved. 93VQ[19], labelled the
+            # end hour by the same guess, is left undecoded.
+            if vals[18] in ("0", "1"):
+                state["solar_feed_to_grid"] = "Enabled" if vals[18] == "1" else "Disabled"
         # Yavb (BMS/status rich block)
         vals = parsed.get("Yavb", ("", []))[1]
         # vals[0] duplicates bat_series_count, which 2ONL already provides via the

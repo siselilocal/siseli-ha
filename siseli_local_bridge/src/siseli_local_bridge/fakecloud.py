@@ -440,6 +440,9 @@ CONTROL_COMMANDS = {
     # read back through QFLAG, which answered "(EbuvxyDajkz" on 2026-09-27.
     "primary_source_interrupt_alarm": {"on": "UEV5Q0kN", "off": "UER5cHgN"},
     "fault_code_record": {"on": "UEV6cyoN", "off": "UER6QBsN"},
+    # Not here: PI30MAX flag d, "solar feed to grid (reserved feature)". This
+    # inverter answered PDd with "(NAKss" on 2026-09-27 and QFLAG never lists
+    # d, so Programme 44 stays read-only (93VQ token 18).
 }
 
 #: PI30 QFLAG ("(E<enabled letters>D<disabled letters>") -> state keys, for the
@@ -552,6 +555,9 @@ SELECT_SETTINGS = {
             "solar_first": "0",  # SUB (confirmed on our inverter's front panel)
         },
     },
+    # Not here: PI30MAX PBATCD<abc> (battery charge/discharge enable). Sent
+    # twice as "PBATCD000" on 2026-09-27 and never answered -- not even
+    # "(NAK" -- while telemetry kept flowing: this firmware does not take it.
     "charger_priority": {
         "channel": "PCP0",
         # Corrected 2026-09-23: the user read the inverter's own front panel
@@ -729,6 +735,15 @@ NUMBER_SETTINGS = {
     # allows feeding the grid.
     "grid_tie_current": {
         "channel": "PGFC", "min": 4, "max": 40, "step": 1, "unit": "A",
+    },
+    # Programme 02, maximum total (solar + utility) charging current. Captured
+    # from the vendor app 2026-09-27 (captures/2026-09-27_real-cloud_prog02.pcap):
+    # "MNCHGC" + 3 digits in amps. MNCHGC060 and MNCHGC050 got "(ACK9"; 058,
+    # 059, 061 and 062 got "(NAKss" -- 10 A steps only, as the manual says. The
+    # app shows no range; 10 A to 150 A is the manual's (11 kW model). The
+    # battery's BMS still caps the charge at its own limit.
+    "max_charging_current": {
+        "channel": "MNCHGC", "min": 10, "max": 150, "step": 10, "unit": "A",
     },
 }
 

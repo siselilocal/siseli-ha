@@ -123,6 +123,17 @@ class TestSingleWriterPerKey(_ParserTestCase):
         self.assertNotIn("mains_charging_starting_time", state)
         self.assertNotIn("mains_charging_ending_time", state)
 
+    def test_93vq_token_18_is_programme_44_solar_feed_to_grid(self):
+        """2026-09-27: GtE on the front panel moved 93VQ[18] 0 -> 1, GtD back."""
+        gtd = b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 004 0 0 \r"
+        gte = b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 004 1 0 \r"
+        self.assertEqual(SolarParser._try_ascii_schema({"93VQ": gtd})["solar_feed_to_grid"], "Disabled")
+        on = SolarParser._try_ascii_schema({"93VQ": gte})
+        self.assertEqual(on["solar_feed_to_grid"], "Enabled")
+        self.assertEqual(on["grid_connection_function"], "Off")  # config pack[7] did not move
+        for gone in ("mains_charging_starting_time", "mains_charging_ending_time"):
+            self.assertNotIn(gone, on)
+
     def test_bat_series_count_comes_from_2onl_only(self):
         from_2onl = SolarParser._try_ascii_schema({"2ONL": captures.BLOCK_2ONL_CHARGING})
         self.assertEqual(from_2onl["bat_series_count"], 4)
@@ -750,6 +761,24 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             self.assertIn(setting, mqtt._CONTROL_SWITCHES)
             self.assertIn(setting, mqtt._CONTROL_TELEMETRY_STATE)
         self.assertIn("power_saving_function", mqtt._CONTROL_TELEMETRY_STATE["eco"]["value_template"])
+
+    def test_max_charging_current_sends_the_captured_frames(self):
+        """Programme 02, 2026-09-27: the vendor app's MNCHGC frames; the
+        inverter NAKed anything off the 10 A grid."""
+        import base64
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt
+        sent = []
+        with mock.patch.object(fakecloud, "_send_control_ci", side_effect=lambda ci: sent.append(ci) or True):
+            for amps in (50, 60):
+                self.assertTrue(fakecloud.send_control_number("max_charging_current", amps))
+            for amps in (58, 59, 61, 62, 0, 160):
+                self.assertFalse(fakecloud.send_control_number("max_charging_current", amps))
+        self.assertEqual([base64.b64decode(ci) for ci in sent],
+                         [b"MNCHGC050\x81}\r", b"MNCHGC060\xd4.\r"])
+        self.assertIn("max_charging_current", mqtt._CONTROL_NUMBERS)
+        self.assertIn("maximum_total_charging_current_a",
+                      mqtt._CONTROL_TELEMETRY_STATE["max_charging_current"]["value_template"])
 
     def test_grid_tie_current_sends_the_captured_frames(self):
         """Programme 56, 2026-09-27: the vendor app's PGFC frames, and the
