@@ -297,8 +297,8 @@ class TestNoDecodeIsPinnedToOneDeviceConfiguration(_ParserTestCase):
     """A guard that only passes on the reference device is a memorised constant."""
 
     SETTINGS = (
-        "mains_input_range", "charging_priority_order", "battery_type", "eco",
-        "does_machine_have_output", "grid_connection_function",
+        "mains_input_range", "grid_regulation_mode", "battery_type", "overload_restart_function",
+        "over_temperature_restart_function", "grid_connection_function",
         "solar_supply_priority", "output_set_voltage",
     )
 
@@ -329,7 +329,7 @@ class TestNoDecodeIsPinnedToOneDeviceConfiguration(_ParserTestCase):
     def test_the_reference_values_are_unchanged(self):
         state = self._decode("230")
         self.assertEqual(state["battery_type"], "LIA protocol (LIA)")
-        self.assertEqual(state["charging_priority_order"], "SNU")
+        self.assertEqual(state["grid_regulation_mode"], "Mode 4")
         self.assertEqual(state["mains_input_range"], "UPS")
         self.assertEqual(state["grid_connection_function"], "Off")
 
@@ -605,6 +605,74 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
                 self.assertIn(s0[setting], options)
         self.assertNotIn("input_source_prompt_function", s1)
         self.assertNotIn("parallel_role", s1)
+
+    def test_settings_found_after_the_factory_reset(self):
+        """Real 93VQ blocks, 2026-09-27, one or two app changes between pushes."""
+        b0811 = b"(1 060 002 13610110240 002 0 1 0 0 1 015 025 030 020 056.4 056.4 042.0 020 0 0 \r"  # before
+        b0816 = b"(1 060 002 13611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 020 0 0 \r"  # 06+07 on
+        b0822 = b"(1 060 002 13611100240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 020 0 0 \r"  # 07 off
+        b0832 = b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 020 0 0 \r"  # mode 1
+        s = {k: SolarParser._try_ascii_schema({"93VQ": v}) for k, v in
+             (("0811", b0811), ("0816", b0816), ("0822", b0822), ("0832", b0832))}
+        self.assertEqual(s["0811"]["overload_restart_function"], "Off")
+        self.assertEqual(s["0816"]["overload_restart_function"], "On")
+        self.assertEqual(s["0816"]["over_temperature_restart_function"], "On")
+        self.assertEqual(s["0822"]["over_temperature_restart_function"], "Off")
+        self.assertEqual(s["0822"]["overload_restart_function"], "On")
+        self.assertEqual(s["0816"]["grid_regulation_mode"], "Mode 4")
+        self.assertEqual(s["0832"]["grid_regulation_mode"], "Mode 1")
+        self.assertEqual(s["0832"]["display_return_to_homepage"], "Off")
+        self.assertEqual(s["0816"]["overload_to_bypass_function"], "On")
+        for gone in ("eco", "parallel_mode", "charging_priority_order", "power_supply_from_pv_to_load_in_ac_state", "does_machine_have_output"):
+            self.assertNotIn(gone, s["0832"])
+
+    def test_pi30_flag_switches_have_read_back(self):
+        import base64
+        import binascii
+        from src.siseli_local_bridge import fakecloud, mqtt
+        flags = {"overload_restart": b"u", "over_temperature_restart": b"v",
+                 "display_return_to_homepage": b"k", "overload_bypass": b"b"}
+        for setting, flag in flags.items():
+            with self.subTest(setting):
+                for state, prefix in (("on", b"PE"), ("off", b"PD")):
+                    body = prefix + flag
+                    frame = base64.b64decode(fakecloud.CONTROL_COMMANDS[setting][state])
+                    self.assertEqual(frame, body + binascii.crc_hqx(body, 0).to_bytes(2, "big") + b"\r")
+                self.assertIn(setting, mqtt._CONTROL_SWITCHES)
+                entry = mqtt._CONTROL_TELEMETRY_STATE[setting]
+                self.assertEqual((entry["state_on"], entry["state_off"]), ("On", "Off"))
+        # The over-temperature frames are the ones the vendor app sent.
+        self.assertEqual(base64.b64decode(fakecloud.CONTROL_COMMANDS["over_temperature_restart"]["on"]), b"PEv\xb2\xa6\r")
+        self.assertEqual(base64.b64decode(fakecloud.CONTROL_COMMANDS["over_temperature_restart"]["off"]), b"PDv\x81\x97\r")
+
+    def test_grid_regulation_mode_select_sends_the_captured_frame(self):
+        import base64
+        from src.siseli_local_bridge import fakecloud, mqtt
+        d = fakecloud.SELECT_SETTINGS["grid_regulation_mode"]
+        frame = base64.b64decode(fakecloud.build_write_ci(d["channel"], d["options"]["mode_4"]))
+        self.assertEqual(frame, b"^S???RS03\xb0\xd5\r")  # the vendor app's own frame
+        _, _, options = mqtt._CONTROL_SELECTS["grid_regulation_mode"]
+        self.assertNotIn("Mode 3", options)  # 60 Hz only
+        for label, key in options.items():
+            with self.subTest(label):
+                code = d["options"][key]
+                vq = b"(1 060 002 1" + code[1:].encode() + b"611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 020 0 0 \r"
+                self.assertEqual(SolarParser._try_ascii_schema({"93VQ": vq})["grid_regulation_mode"], label)
+
+    def test_clock_sync_sends_local_time_as_pi18_dat(self):
+        import base64
+        import binascii
+        import time as _time
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt
+        fixed = _time.struct_time((2026, 9, 27, 8, 45, 30, 6, 270, 0))
+        sent = []
+        with mock.patch.object(fakecloud.time, "localtime", return_value=fixed), \
+                mock.patch.object(fakecloud, "_send_control_ci", side_effect=lambda ci: sent.append(ci) or True):
+            self.assertTrue(fakecloud.send_clock_sync())
+        body = b"^S???DAT260927084530"
+        self.assertEqual(base64.b64decode(sent[0]), body + binascii.crc_hqx(body, 0).to_bytes(2, "big") + b"\r")
+        self.assertEqual(mqtt._CONTROL_BUTTONS["sync_inverter_clock"][2], "send_clock_sync")
 
     def test_labels_are_the_select_options(self):
         """grid_working_range's HA select reads this key back verbatim."""

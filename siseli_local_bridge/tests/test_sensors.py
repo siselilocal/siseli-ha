@@ -64,7 +64,7 @@ class TestSensors(unittest.TestCase):
         self.assertEqual(get_sensor_group("bms_avg_temp_c"), "battery")
         self.assertEqual(get_sensor_group("grid_connection_sign"), "grid")
         self.assertEqual(get_sensor_group("pv_energy_feeding_priority"), "pv")
-        self.assertEqual(get_sensor_group("parallel_mode"), "load")
+        self.assertEqual(get_sensor_group("dual_output_mode"), "load")
 
     def test_grouping_covers_all_sensors(self):
         grouped = get_grouped_sensor_keys()

@@ -2161,7 +2161,13 @@ class SolarParser:
                         # same time. The labels match mqtt._CONTROL_SELECTS'
                         # grid_working_range options, which read this key back.
                         state["mains_input_range"] = {"1": "UPS", "0": "Appliance (APL)"}.get(prefix[0], prefix[0])
-                        state["charging_priority_order"] = {"1": "UTI", "2": "SOL", "3": "SNU"}.get(prefix[1], prefix[1])
+                        # Grid regulation / country mode (Programme 50, the app's
+                        # "Grid Connection Protocol Type"): Mode n = code n-1. Proven
+                        # 2026-09-27: the app read Mode 4 while this was 3, and setting
+                        # Mode 1 turned it to 0. This firmware's factory value is Mode 4.
+                        state["grid_regulation_mode"] = (
+                            f"Mode {int(prefix[1]) + 1}" if prefix[1] in "01234" else prefix[1]
+                        )
                         # Battery type (manual Programme 05), not a UTI/SUB/SBU
                         # working mode: capture of 2026-09-25 shows this digit alone
                         # going 6 -> 4 -> 6 as the vendor app set Growatt ->
@@ -2180,17 +2186,23 @@ class SolarParser:
                         # and it read 1 (LBU, the user's setting) before the factory
                         # reset set it to 0. Labels = mqtt._CONTROL_SELECTS options.
                         state["solar_supply_priority"] = {"0": "BLU", "1": "LBU"}.get(prefix[3], prefix[3])
-                        state["eco"] = "On" if prefix[4] == "1" else "Off"
-                        # prefix[5] is NOT dual output (it read 1 while dual output
-                        # was off): the real state is dHrK token 0, decoded below.
-                        state["does_machine_have_output"] = "Yes" if prefix[6] == "1" else "No"
+                        # prefix[4] / prefix[6] = Programmes 06 and 07 (automatic restart
+                        # after overload / after over-temperature), not "ECO" or "does
+                        # the machine have output". 2026-09-27: enabling 06+07 moved
+                        # prefix[4] 0 -> 1, then disabling 07 alone moved prefix[6]
+                        # 1 -> 0. prefix[5] (not dual output) is still unidentified.
+                        state["overload_restart_function"] = "On" if prefix[4] == "1" else "Off"
+                        state["over_temperature_restart_function"] = "On" if prefix[6] == "1" else "Off"
                         state["grid_connection_function"] = "On" if prefix[7] == "1" else "Off"
         if len(vals) >= 5:
             aux_pack = vals[4]
             if len(aux_pack) >= 1:
                 state["ct_function_switch"] = "ON" if aux_pack[0] == "1" else "OFF"
             if len(aux_pack) >= 2:
-                state["parallel_mode"] = "Enable" if aux_pack[1] == "1" else "Disable"
+                # Programme 19, display automatically returns to the home page
+                # (not a parallel mode): 2026-09-27, setting 19 to disabled moved it
+                # 1 -> 0; the factory reset had set it to 1, its default.
+                state["display_return_to_homepage"] = "On" if aux_pack[1] == "1" else "Off"
             if len(aux_pack) >= 3:
                 # Charger priority (Programme 16), not a parallel role: PCP02 (OSO)
                 # moved it 1 -> 2 on 2026-09-26, and it read 2 (OSO, the user's
@@ -2207,7 +2219,9 @@ class SolarParser:
             # On -> 6 alone went 1, Off -> 0.
             state["buzzer_function"] = "On" if vals[5] == "1" else "Off"
             state["lcd_back_lighting"] = "On" if vals[6] == "1" else "Off"
-            state["power_supply_from_pv_to_load_in_ac_state"] = "Yes" if vals[7] == "1" else "No"
+            # Programme 23, overload to bypass: 2026-09-27, enabling 23 moved this
+            # token 0 -> 1 in the same push where Programme 19 moved the other way.
+            state["overload_to_bypass_function"] = "On" if vals[7] == "1" else "Off"
             state["grid_connection_sign"] = "Off Grid" if vals[8] == "1" else "On Grid"
             state["battery_equalization_mode"] = "Disable" if vals[9] == "1" else "Enable"
         if len(vals) >= 14:

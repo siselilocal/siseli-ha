@@ -2,6 +2,58 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.64] - 2026-09-27
+
+### Fixed
+
+- **Five more 93VQ positions carried the vendor portal's labels on the wrong
+  settings.** Found on 2026-09-27 by changing one or two settings at a time
+  in the vendor app and watching the dongle's next push; each also matched
+  the factory values the reset of 2026-09-26 had left:
+  - aux pack digit 1 (`parallel_mode`) = **Programme 19**, display returns to
+    the home page -> new `display_return_to_homepage`;
+  - token 7 (`power_supply_from_pv_to_load_in_ac_state`) = **Programme 23**,
+    overload to bypass -> now `overload_to_bypass_function`;
+  - config pack digit 4 (`eco`) = **Programme 06**, overload automatic
+    restart -> now `overload_restart_function`;
+  - config pack digit 6 (`does_machine_have_output`) = **Programme 07**,
+    over-temperature automatic restart -> now `over_temperature_restart_function`;
+  - config pack digit 1 (`charging_priority_order`) = **Programme 50**, grid
+    regulation ("Grid Connection Protocol Type" in the app), Mode n = code
+    n-1 -> new `grid_regulation_mode`. This firmware's factory value is Mode 4,
+    not the manual's Mode 5.
+  The three `*_function` keys were declared but never decoded; they are
+  decoded and enabled now. The five mislabelled keys are removed; config pack digit 5 stays unidentified. ECO
+  (Programme 08) has no known telemetry position, so its switch stays
+  optimistic.
+
+### Added
+
+- **"Grid Regulation Mode" select (Programme 50), with read-back.** Captured
+  from the vendor app: `^S???RS0<n>` (Mode 4 = `^S???RS03`, answered `^1`),
+  Mode n = code n-1. Offers Modes 1, 2, 4 and 5; Mode 3 (57-62 Hz) is left out
+  because on a 50 Hz grid it would make the inverter treat the grid as absent.
+- **"Sync Inverter Clock" button (Programmes 51-55 in one go).** Sends the
+  Home Assistant host's local time as `^S???DAT<YYMMDDhhmmss>`. Not captured
+  (the vendor app has no clock setting): it is the PI18 date/time command, the
+  same frame family as Programme 50's captured `^S???RS`. A wrong guess is
+  refused with `^0`; the inverter's own clock is read back in
+  `system_time_ymd` / `system_time_hm`. Press it from an automation to keep
+  the clock in step.
+- **Switches for Programmes 06, 07, 19 and 23**, with read-back from the
+  positions above. Voltronic PI30 flag commands: `PEu`/`PDu`, `PEv`/`PDv`
+  (captured from the vendor app), `PEk`/`PDk`, `PEb`/`PDb`.
+
+### Verified on hardware
+
+- 2026-09-27, from Home Assistant: each of the four switches turned off and
+  on again (19 on and off), Grid Regulation Mode set to Mode 2 and back to
+  Mode 1, and the clock synced (`^S???DAT` answered `^1`, the inverter's
+  clock moved from 08:41 to 08:53). Every change was read back from the
+  inverter's own telemetry, so the commands that were not captured
+  (`PEu`/`PDu`, `PEk`/`PDk`, `PEb`/`PDb`, `^S???RS00`/`RS01`, `^S???DAT`)
+  are confirmed.
+
 ## [2.6.63] - 2026-09-26
 
 ### Added

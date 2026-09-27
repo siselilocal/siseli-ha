@@ -97,9 +97,9 @@ class TestParsers(unittest.TestCase):
         # The genuine token decodes must survive untouched.
         self.assertEqual(state["output_set_voltage"], 230)
         self.assertEqual(state["mains_input_range"], "UPS")
-        self.assertEqual(state["charging_priority_order"], "SNU")
+        self.assertEqual(state["grid_regulation_mode"], "Mode 4")
         self.assertEqual(state["battery_type"], "LIA protocol (LIA)")
-        self.assertEqual(state["eco"], "Off")
+        self.assertEqual(state["overload_restart_function"], "Off")
         self.assertEqual(state["ct_function_switch"], "OFF")
         self.assertEqual(state["charger_priority"], "Solar First (SNU)")
         self.assertEqual(state["maximum_total_charging_current_a"], 50)

@@ -1,6 +1,6 @@
 # ☀️ Siseli Local Bridge for Home Assistant
 
-[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.63-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
+[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.64-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
 [![HA Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-green.svg)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
@@ -15,7 +15,7 @@ publishes it to Home Assistant through MQTT auto-discovery. It runs in one of tw
   Home Assistant host, readings refresh every 15 seconds, and the inverter's settings
   become Home Assistant controls. See [100% local mode](#100-local-mode).
 
-**205 sensors across 7 devices**, 144 enabled on a fresh install, plus the controls of
+**202 sensors across 7 devices**, 144 enabled on a fresh install, plus the controls of
 the 100% local mode.
 
 > **Acknowledgment:** a fork of [fadmaz/siseli-ha](https://github.com/fadmaz/siseli-ha)
@@ -66,7 +66,7 @@ vendor app keeps working. You lose the Home Assistant sensors, nothing else.
 
 ## Known limitations
 
-**42 of the 205 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
+**39 of the 202 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
 with hardcoded constants — fault flags that could never report a fault, a `Mode` that was
 a fixed string in the source. Those were removed in 2.6.1. The entities remain, disabled
 by default, and publish an explicit "no value" rather than a comforting lie. If your
@@ -215,35 +215,44 @@ The addresses below are **examples**; use your own.
 
 ### Controlling the inverter from Home Assistant
 
-Every control shows the value **read back from the inverter**, not the last value sent:
+Every control except ECO shows the value **read back from the inverter**, not the last value sent:
 if the inverter refuses or adjusts a setting, the entity shows what it really holds. The
-commands follow the Voltronic PI30 protocol the inverter speaks; each one below was
-checked on the test hardware against the inverter's own front panel.
+commands follow the Voltronic PI30 protocol the inverter speaks (PI18 for programme 50
+and the clock); each one below was checked on the test hardware.
 
 | Control | Manual programme | Values |
 |---|---|---|
 | Output Source Priority | 01 | SBU / SUB |
 | Grid Working Range | 03 | UPS / Appliance |
 | Battery Type | 05 | AGM … Growatt, Pylontech, … (10 types) |
-| ECO Power Saving | 08 | on / off |
+| Overload Automatic Restart | 06 | on / off |
+| Over Temperature Automatic Restart | 07 | on / off |
+| ECO Power Saving | 08 | on / off (no read-back: no telemetry position known) |
 | Output Voltage | 10 | 220 / 230 / 240 V |
 | Max Utility Charge Current | 11 | 2, 10–90 A |
 | Back To Grid Voltage | 12 | 44–51 V |
 | Back To Battery Voltage | 13 | 48–58 V |
 | Charger Priority | 16 | OSO / CSO / SNU |
 | Buzzer | 18 | on / off |
+| Display Returns To Homepage | 19 | on / off |
 | Backlight | 20 | on / off |
+| Overload To Bypass | 23 | on / off |
 | Equalization Voltage | 31 | 48.0–60.0 V |
 | BMS Lock Machine SOC | 38 | 5–95 %, steps of 5 |
 | Restore Mains Charging SOC | 39 | 5–95 %, steps of 5 |
 | Restore Battery Discharging SOC | 40 | 5–95 %, steps of 5 |
 | Inverter Startup SOC | 41 | 5–100 %, steps of 5 |
 | Solar Supply Priority | 43 | BLU / LBU |
+| Grid Regulation Mode | 50 | Mode 1 / 2 / 4 / 5 (Mode 3 is 60 Hz only, left out) |
+| Sync Inverter Clock (button) | 51–55 | sets the inverter's date and time to Home Assistant's |
 | Dual Output | 60 | on / off |
 
 Plus a **BMS Communication Normal** sensor: when it reads `No`, the inverter has lost its
 BMS and the state of charge it reports is its own estimate (it read 99–100 % against a
 real 43 % in testing), so SOC-based automations should check it first.
+
+To keep the inverter's clock right, press **Sync Inverter Clock** from a daily automation
+(`button.press` at 03:00, for example).
 
 **Handle with care:**
 

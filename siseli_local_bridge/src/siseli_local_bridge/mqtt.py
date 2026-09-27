@@ -172,9 +172,13 @@ _CONTROL_SWITCHES = {
     "backlight": ("Backlight", "mdi:lightbulb-outline"),
     "buzzer": ("Buzzer", "mdi:volume-high"),
     "dual_output": ("Dual Output", "mdi:electric-switch"),
-    # Programme 08. Optimistic until the 93VQ digit is confirmed on the front
-    # panel: the existing "eco" sensor read On while the panel showed SdS.
+    # Programme 08. Optimistic: no telemetry position follows it (the 93VQ
+    # digit once labelled "eco" is Programme 06, found 2026-09-27).
     "eco": ("ECO Power Saving", "mdi:leaf"),
+    "overload_restart": ("Overload Automatic Restart", "mdi:restart"),  # Programme 06
+    "over_temperature_restart": ("Over Temperature Automatic Restart", "mdi:thermometer-alert"),  # Programme 07
+    "display_return_to_homepage": ("Display Returns To Homepage", "mdi:monitor"),  # Programme 19
+    "overload_bypass": ("Overload To Bypass", "mdi:swap-horizontal"),  # Programme 23
 }
 #: button suffix -> (label, icon, fakecloud function name to call on press). Kept
 #: as a dict so discovery/subscribe/dispatch below can never drift apart, same
@@ -182,6 +186,8 @@ _CONTROL_SWITCHES = {
 _CONTROL_BUTTONS = {
     "clear_fault_code": ("Clear Fault Code", "mdi:alert-remove-outline", "send_clear_fault_code"),
     "refresh_telemetry": ("Refresh Telemetry", "mdi:refresh", "send_manual_refresh"),
+    # Programmes 51-55 in one go; see fakecloud.send_clock_sync.
+    "sync_inverter_clock": ("Sync Inverter Clock", "mdi:clock-check-outline", "send_clock_sync"),
 }
 #: setting name -> (label, icon, {HA-displayed option -> fakecloud.SELECT_SETTINGS
 #: option key}). Unlike _CONTROL_SWITCHES/_CONTROL_BUTTONS, this dispatches a
@@ -241,6 +247,17 @@ _CONTROL_SELECTS = {
         # Programme 11. Labels match the read-back template below.
         "Max Utility Charge Current", "mdi:current-ac",
         {f"{a} A": f"{a}" for a in (2, 10, 20, 30, 40, 50, 60, 70, 80, 90)},
+    ),
+    "grid_regulation_mode": (
+        # Programme 50. Labels are parsers.py's grid_regulation_mode values;
+        # Mode 3 (60 Hz only) is left out on purpose, see fakecloud.
+        "Grid Regulation Mode", "mdi:transmission-tower",
+        {
+            "Mode 1": "mode_1",
+            "Mode 2": "mode_2",
+            "Mode 4": "mode_4",
+            "Mode 5": "mode_5",
+        },
     ),
     "battery_type": (
         # Labels are parsers.py's battery_type values verbatim, so the
@@ -318,6 +335,10 @@ _CONTROL_TELEMETRY_STATE = {
         "group": get_sensor_group("max_utility_charge_current_a"),
         "value_template": "{{ value_json.max_utility_charge_current_a }} A",
     },
+    "grid_regulation_mode": {
+        "group": get_sensor_group("grid_regulation_mode"),
+        "value_template": "{{ value_json.grid_regulation_mode }}",
+    },
     "battery_type": {
         "group": get_sensor_group("battery_type"),
         "value_template": "{{ value_json.battery_type }}",
@@ -373,6 +394,27 @@ _CONTROL_TELEMETRY_STATE = {
         "value_template": "{{ value_json.dual_output_mode }}",
         "state_on": "On",
         "state_off": "Off",
+    },
+    # Programmes 06, 07, 19, 23 -- 93VQ positions proven 2026-09-27.
+    "overload_restart": {
+        "group": get_sensor_group("overload_restart_function"),
+        "value_template": "{{ value_json.overload_restart_function }}",
+        "state_on": "On", "state_off": "Off",
+    },
+    "over_temperature_restart": {
+        "group": get_sensor_group("over_temperature_restart_function"),
+        "value_template": "{{ value_json.over_temperature_restart_function }}",
+        "state_on": "On", "state_off": "Off",
+    },
+    "display_return_to_homepage": {
+        "group": get_sensor_group("display_return_to_homepage"),
+        "value_template": "{{ value_json.display_return_to_homepage }}",
+        "state_on": "On", "state_off": "Off",
+    },
+    "overload_bypass": {
+        "group": get_sensor_group("overload_to_bypass_function"),
+        "value_template": "{{ value_json.overload_to_bypass_function }}",
+        "state_on": "On", "state_off": "Off",
     },
     "buzzer": {
         "group": get_sensor_group("buzzer_function"),

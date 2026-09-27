@@ -385,6 +385,15 @@ CONTROL_COMMANDS = {
     # front panel (SdS = disabled, SEn = enabled). With it enabled the inverter
     # may cut its output at low load on battery -- and it powers Home Assistant.
     "eco": {"on": "UEVqYRsN", "off": "UERqUioN"},
+    # PI30 flags for Programmes 06 (u, overload restart), 07 (v, over-temperature
+    # restart), 19 (k, LCD returns to the home page) and 23 (b, overload bypass).
+    # v is captured from the vendor app (PEv/PDv, 2026-09-27, CRC 0xB2A6/0x8197);
+    # u, k and b follow the same documented flag table. Each has a 93VQ read-back
+    # (parsers.py); all four were toggled from HA and read back on 2026-09-27.
+    "overload_restart": {"on": "UEV1gsUN", "off": "UER1sfQN"},
+    "over_temperature_restart": {"on": "UEV2sqYN", "off": "UER2gZcN"},
+    "display_return_to_homepage": {"on": "UEVrcToN", "off": "UERrQgsN"},
+    "overload_bypass": {"on": "UEVi4BMN", "off": "UERi0yIN"},
 }
 _CLEAR_FAULT_CODE_CI = "RkFVTFRDR6YN"
 
@@ -548,6 +557,22 @@ SELECT_SETTINGS = {
         # the 2026-09-26 factory reset moved 2 -> 30.
         "channel": "MUCHGC",
         "options": {f"{a}": f"0{a:02d}" for a in (2, 10, 20, 30, 40, 50, 60, 70, 80, 90)},
+    },
+    "grid_regulation_mode": {
+        # Manual Programme 50 (the app's "Grid Connection Protocol Type"): the
+        # grid voltage/frequency window the inverter accepts. Captured from the
+        # vendor app 2026-09-27 (captures/2026-09-27_real-cloud_prog50.pcap):
+        # "^S???RS03" + CRC16/XMODEM 0xB0D5 for Mode 4, answered "^1", and the
+        # next read-back moved as expected. Mode n = code n-1. Mode 3 (57-62 Hz)
+        # is deliberately not offered: on a 50 Hz grid it would make the
+        # inverter treat the grid as absent.
+        "channel": "^S???RS",
+        "options": {
+            "mode_1": "00",
+            "mode_2": "01",
+            "mode_4": "03",
+            "mode_5": "04",
+        },
     },
     "battery_type": {
         # Manual Programme 05. Captured from the vendor app 2026-09-26:
@@ -747,6 +772,20 @@ def send_clear_fault_code() -> bool:
     ok = _send_control_ci(_CLEAR_FAULT_CODE_CI)
     if ok:
         log("[CONTROL] clear fault code sent")
+    return ok
+
+
+def send_clock_sync() -> bool:
+    """Set the inverter's clock (manual Programmes 51-55) to this host's local
+    time. NOT captured -- the vendor app has no clock setting. The inverter
+    already takes "^S???RS0<n>" (Programme 50, captured), a Voltronic PI18-style
+    frame, and PI18 sets the date and time with DAT<YYMMDDhhmmss>. A wrong guess
+    is answered "^0" and changes nothing; the COST block's system_time_ymd /
+    system_time_hm read-back shows whether the clock followed."""
+    stamp = time.strftime("%y%m%d%H%M%S", time.localtime())
+    ok = _send_control_ci(build_write_ci("^S???DAT", stamp))
+    if ok:
+        log(f"[CONTROL] clock sync sent: {stamp}")
     return ok
 
 
