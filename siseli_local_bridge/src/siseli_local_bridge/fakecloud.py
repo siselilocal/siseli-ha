@@ -281,8 +281,49 @@ def _handle_publish(control: int, body: bytes, conn: tcpstack.Connection) -> byt
             conn.poll_reply_count = getattr(conn, "poll_reply_count", 0) + 1
             conn.last_reply_ts = time.monotonic()
             conn.poll_stall_logged = False
+            _log_command_reply(payload, conn)
 
     return _build_ack_publish(topic, payload)
+
+
+def _apply_qflag(text: str, conn: tcpstack.Connection) -> None:
+    """Merge a QFLAG answer into the state and let the publish tick flush it.
+    Logged only when it changes, since it is asked every minute."""
+    from . import parsers as _parsers
+    from . import state as _shared_state
+
+    values = parse_qflag(text)
+    if values != getattr(conn, "last_qflag", None):
+        log(f"[CONTROL] inverter flags (QFLAG): {text} -> {values}", level="warning")
+        conn.last_qflag = values
+    if any(_shared_state.LAST_STATE.get(k) != v for k, v in values.items()):
+        _shared_state.update_state(values)
+        _parsers.PENDING_PUBLISH = True
+
+
+def _log_command_reply(payload: bytes, conn: tcpstack.Connection) -> None:
+    """Log the inverter's answer to a dev_rpc command ("(ACK9", "(NAKss", "^1",
+    "^0", or a query's data). Telemetry replies carry a "ct" block list and are
+    skipped; a command reply carries a single "co" field. The periodic QFLAG
+    query's answer goes to _apply_qflag instead."""
+    envelope = _extract_envelope(payload)
+    body = envelope.get("b") if isinstance(envelope, dict) else None
+    if not isinstance(body, dict) or "ct" in body or not body.get("co"):
+        return
+    try:
+        raw = base64.b64decode(body["co"] + "==")
+    except (ValueError, binascii.Error):
+        return
+    text = raw.decode("latin1").strip("\r\n")
+    # Drop the trailing CRC bytes of PI30 answers when they are not printable.
+    text = "".join(ch if 32 <= ord(ch) < 127 else "." for ch in text)
+    command = getattr(conn, "last_command", "?")
+    if _QFLAG_RE.match(text):
+        # Recognised by its shape, not by last_command: a switch pressed in the
+        # same second as the minute's QFLAG would otherwise swap the labels.
+        _apply_qflag(text, conn)
+        return
+    log(f"[CONTROL] inverter answered {command}: {text}", level="warning")
 
 
 def _handle_frame(control: int, body: bytes, conn: tcpstack.Connection) -> bytes:
@@ -394,7 +435,41 @@ CONTROL_COMMANDS = {
     "over_temperature_restart": {"on": "UEV2sqYN", "off": "UER2gZcN"},
     "display_return_to_homepage": {"on": "UEVrcToN", "off": "UERrQgsN"},
     "overload_bypass": {"on": "UEVi4BMN", "off": "UERi0yIN"},
+    # PI30 flags y (Programme 22, beeps while the primary source is
+    # interrupted) and z (Programme 25, fault code record). Same flag table;
+    # read back through QFLAG, which answered "(EbuvxyDajkz" on 2026-09-27.
+    "primary_source_interrupt_alarm": {"on": "UEV5Q0kN", "off": "UER5cHgN"},
+    "fault_code_record": {"on": "UEV6cyoN", "off": "UER6QBsN"},
 }
+
+#: PI30 QFLAG ("(E<enabled letters>D<disabled letters>") -> state keys, for the
+#: flags no telemetry block carries. ECO (j) moves no field of any of the 15
+#: blocks (every field compared across ECO on/off, 2026-09-26 capture), so this
+#: query is its only read-back. The other letters (a, b, k, u, v, x) are already
+#: read from 93VQ and are left to it.
+_QFLAG_KEYS = {
+    "j": "power_saving_function",
+    "y": "primary_source_interrupt_alarm",
+    "z": "fault_code_record",
+}
+_QFLAG_INTERVAL_SEC = 60
+_QFLAG_RE = re.compile(r"^\(E([a-z]*)D([a-z]*)")
+
+
+def parse_qflag(text: str) -> dict:
+    """"(EbuvxyDajkz.." -> {"power_saving_function": "Off", ...}; {} if the
+    answer is not a QFLAG reply."""
+    match = _QFLAG_RE.match(text)
+    if not match:
+        return {}
+    enabled, disabled = match.groups()
+    values = {}
+    for letter, key in _QFLAG_KEYS.items():
+        if letter in enabled:
+            values[key] = "On"
+        elif letter in disabled:
+            values[key] = "Off"
+    return values
 _CLEAR_FAULT_CODE_CI = "RkFVTFRDR6YN"
 
 # The one thing that changed between a failed replay (2026-09-13, "i" picked
@@ -645,6 +720,16 @@ NUMBER_SETTINGS = {
     "equalization_voltage": {
         "channel": "PBEQV", "min": 48.0, "max": 60.0, "step": 0.1, "format": "{:05.2f}", "unit": "V",
     },
+    # Programme 56, grid-tie (feed-in) current limit. Captured from the vendor
+    # app 2026-09-27 (captures/2026-09-27_real-cloud_prog56.pcap): "PGFC" + 3
+    # digits in amps. PGFC002 got "(NAKss"; PGFC006, PGFC005 and PGFC004 got
+    # "(ACK9" and 93VQ token 17 read back 006 then 005. The front panel steps by
+    # 2 A but the command takes 1 A steps. 4 A is the lowest the inverter takes
+    # (panel minimum too), 40 A the app's maximum. Only acts while Programme 44
+    # allows feeding the grid.
+    "grid_tie_current": {
+        "channel": "PGFC", "min": 4, "max": 40, "step": 1, "unit": "A",
+    },
 }
 
 
@@ -730,11 +815,15 @@ def _first_established_connection() -> Optional[tcpstack.Connection]:
     return None
 
 
-def _send_control_ci(ci_b64: str) -> bool:
-    conn = _first_established_connection()
+def _send_control_ci(ci_b64: str, conn: Optional[tcpstack.Connection] = None) -> bool:
+    if conn is None:
+        conn = _first_established_connection()
     if conn is None:
         log("[CONTROL] no established local-cloud connection to send on", level="warning")
         return False
+    # Remembered so _log_command_reply can say which command an answer is for.
+    frame = base64.b64decode(ci_b64)
+    conn.last_command = frame[:-3].decode("ascii", errors="replace")
     topic = f"dtu/{conn.dtu_id}/sub/service/dev_rpc"
     payload = json.dumps(
         {
@@ -854,6 +943,15 @@ def poll_due_connections() -> None:
                 log(f"[LOCAL CLOUD] dev_rpc poll sent to {conn.peer_ip}:{conn.peer_port} i=501")
         except Exception as exc:
             log(f"[LOCAL CLOUD ERROR] dev_rpc poll failed: {exc}", level="error")
+
+        # PI30 flag status (read only) for ECO and Programmes 22/25, which no
+        # telemetry block carries. Once a minute, on the poll tick.
+        if now >= getattr(conn, "next_qflag_ts", 0.0):
+            conn.next_qflag_ts = now + _QFLAG_INTERVAL_SEC
+            try:
+                _send_control_ci(build_write_ci("QFLAG", ""), conn=conn)
+            except Exception as exc:
+                log(f"[LOCAL CLOUD ERROR] QFLAG query failed: {exc}", level="error")
 
 
 def _on_established(conn: tcpstack.Connection) -> None:

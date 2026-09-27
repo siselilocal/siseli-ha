@@ -159,7 +159,7 @@ opened a socket. You can ignore the `[CONFIG WARNING]` about it.
 
 ## What you get
 
-**202 sensors across 7 devices.** 144 are enabled on a fresh install; the rest are
+**205 sensors across 7 devices.** 147 are enabled on a fresh install; the rest are
 disabled by default and can be switched on individually in Home Assistant.
 
 | Device | Sensors | Covers |
@@ -354,7 +354,7 @@ Mosquitto's log, which is harmless.
 
 ### Controls
 
-Every control except ECO reads its value back from the inverter's own telemetry, so a refused or
+Every control reads its value back from the inverter itself, so a refused or
 adjusted setting shows what the inverter really holds. The project README lists them
 with their manual programme numbers. Two cautions:
 

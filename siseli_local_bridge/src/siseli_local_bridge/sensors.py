@@ -185,6 +185,10 @@ SENSORS: Dict[str, Dict[str, object]] = {
     "overload_restart_function": sensor("Settings - Overload Restart Function", icon="mdi:restart", entity_category="diagnostic"),
     "overload_to_bypass_function": sensor("Settings - Overload To Bypass Function", icon="mdi:swap-horizontal", entity_category="diagnostic"),
     "display_return_to_homepage": sensor("Settings - Display Returns To Homepage", icon="mdi:monitor", entity_category="diagnostic"),
+    # From the PI30 QFLAG query (fakecloud.py), not from a telemetry block.
+    "power_saving_function": sensor("Settings - ECO Power Saving", icon="mdi:leaf", entity_category="diagnostic"),
+    "primary_source_interrupt_alarm": sensor("Settings - Beeps While Primary Source Interrupted", icon="mdi:volume-high", entity_category="diagnostic"),
+    "fault_code_record": sensor("Settings - Fault Code Record", icon="mdi:file-document-alert-outline", entity_category="diagnostic"),
     "parallel_mode_turn_off_soc": sensor("Settings - Parallel Mode Turn Off SOC", unit="%", state_class="measurement", icon="mdi:battery-arrow-down", entity_category="diagnostic"),
     "parallel_mode_turn_off_voltage_v": sensor("Settings - Parallel Mode Turn Off Voltage", unit="V", device_class="voltage", state_class="measurement", icon="mdi:battery-arrow-down-outline", entity_category="diagnostic"),
     "charger_priority": sensor("Settings - Charger Priority", icon="mdi:battery-sync", entity_category="diagnostic"),

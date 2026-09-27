@@ -490,7 +490,8 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
                 frame = base64.b64decode(fakecloud.CONTROL_COMMANDS[setting][state])
                 self.assertEqual(frame, mnemonic + binascii.crc_hqx(mnemonic, 0).to_bytes(2, "big") + b"\r")
         self.assertIn("eco", mqtt._CONTROL_SWITCHES)
-        self.assertNotIn("eco", mqtt._CONTROL_TELEMETRY_STATE)  # optimistic until panel-checked
+        # No telemetry block carries ECO; its read-back is the QFLAG letter j.
+        self.assertIn("power_saving_function", mqtt._CONTROL_TELEMETRY_STATE["eco"]["value_template"])
 
     def test_output_voltage_is_the_pi30_v_command_with_read_back(self):
         import base64
@@ -673,6 +674,102 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         body = b"^S???DAT260927084530"
         self.assertEqual(base64.b64decode(sent[0]), body + binascii.crc_hqx(body, 0).to_bytes(2, "big") + b"\r")
         self.assertEqual(mqtt._CONTROL_BUTTONS["sync_inverter_clock"][2], "send_clock_sync")
+
+    def test_command_replies_are_logged_and_qflag_read_back(self):
+        """2026-09-27: the inverter's answer to a command is logged with the
+        command it answers; telemetry replies are not; a QFLAG answer (the
+        real one, "(EbuvxyDajkz") sets ECO / Programmes 22 and 25 instead."""
+        import base64
+        import json
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, parsers
+        from src.siseli_local_bridge import state as shared_state
+        conn = SimpleNamespace(reply=mock.Mock(), dtu_id="1", last_command="PGFC006")
+
+        def publish(b):
+            payload = b"\x00" + json.dumps({"c": 5, "t": "x", "s": "y", "i": 504, "e": 0, "b": b}).encode()
+            topic = b"dtu/1/pub/service/dev_rpc_reply"
+            return len(topic).to_bytes(2, "big") + topic + payload
+
+        def co(raw):
+            return {"sa": "", "co": base64.b64encode(raw).decode()}
+
+        with mock.patch.object(fakecloud, "log") as log, \
+                mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True), \
+                mock.patch.dict(shared_state.LAST_STATE, {}, clear=False), \
+                mock.patch.object(parsers, "PENDING_PUBLISH", False):
+            fakecloud._handle_publish(0x30, publish({"sa": "", "ct": [{"cn": "93VQ", "co": "KDEgMDYwDQ=="}]}), conn)
+            fakecloud._handle_publish(0x30, publish(co(b"(ACK9 \r")), conn)
+            fakecloud._handle_publish(0x30, publish(co(b"(EbuvxyDajkz8\x12\r")), conn)
+            snapshot = shared_state.snapshot_state()
+            pending = parsers.PENDING_PUBLISH
+        answered = [str(c) for c in log.call_args_list if "inverter answered" in str(c)]
+        self.assertEqual(len(answered), 1)
+        self.assertIn("PGFC006: (ACK9", answered[0])
+        self.assertEqual(snapshot["power_saving_function"], "Off")
+        self.assertEqual(snapshot["primary_source_interrupt_alarm"], "On")
+        self.assertEqual(snapshot["fault_code_record"], "Off")
+        self.assertTrue(pending)
+        conn.reply.assert_not_called()  # replies never trigger a send
+
+    def test_qflag_is_asked_once_a_minute_on_the_poll_tick(self):
+        import base64
+        import binascii
+        import json
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, tcpstack
+        conn = SimpleNamespace(reply=mock.Mock(), dtu_id="1", next_poll_ts=0.0, closed=False,
+                               peer_ip="x", peer_port=1)
+        sent = []
+
+        def ci_of(call):
+            frame = call[0][0]
+            return json.loads(frame[frame.index(b"{"):])["b"].get("ci")
+
+        with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 15), \
+                mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
+                mock.patch.object(fakecloud.time, "monotonic", side_effect=[100.0, 116.0, 161.0]):
+            for _ in range(3):
+                conn.next_poll_ts = 0.0
+                fakecloud.poll_due_connections()
+        sent = [base64.b64decode(ci) for ci in map(ci_of, conn.reply.call_args_list) if ci]
+        qflag = b"QFLAG" + binascii.crc_hqx(b"QFLAG", 0).to_bytes(2, "big") + b"\r"
+        self.assertEqual(sent, [qflag, qflag])  # t=100 and t=161, not t=116
+
+    def test_programme_22_and_25_switches_are_pi30_flags_y_and_z(self):
+        import base64
+        import binascii
+        from src.siseli_local_bridge import fakecloud, mqtt
+        for setting, flag in (("primary_source_interrupt_alarm", b"y"), ("fault_code_record", b"z")):
+            for state, prefix in (("on", b"PE"), ("off", b"PD")):
+                body = prefix + flag
+                self.assertEqual(base64.b64decode(fakecloud.CONTROL_COMMANDS[setting][state]),
+                                 body + binascii.crc_hqx(body, 0).to_bytes(2, "big") + b"\r")
+            self.assertIn(setting, mqtt._CONTROL_SWITCHES)
+            self.assertIn(setting, mqtt._CONTROL_TELEMETRY_STATE)
+        self.assertIn("power_saving_function", mqtt._CONTROL_TELEMETRY_STATE["eco"]["value_template"])
+
+    def test_grid_tie_current_sends_the_captured_frames(self):
+        """Programme 56, 2026-09-27: the vendor app's PGFC frames, and the
+        93VQ token 17 read-back they moved."""
+        import base64
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt
+        sent = []
+        with mock.patch.object(fakecloud, "_send_control_ci", side_effect=lambda ci: sent.append(ci) or True):
+            for amps in (6, 5, 4):
+                self.assertTrue(fakecloud.send_control_number("grid_tie_current", amps))
+            for amps in (2, 3, 41):  # 2 A NAKed by the inverter; 40 A is the app's max
+                self.assertFalse(fakecloud.send_control_number("grid_tie_current", amps))
+        self.assertEqual([base64.b64decode(ci) for ci in sent],
+                         [b"PGFC006\xf7\xce\r", b"PGFC005\xc7\xad\r", b"PGFC004\xd7\x8c\r"])
+        self.assertIn("grid_tie_current", mqtt._CONTROL_NUMBERS)
+        vq = b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 006 0 0 \r"
+        self.assertEqual(SolarParser._try_ascii_schema({"93VQ": vq})["grid_connected_current_a"], 6)
+        entry = mqtt._CONTROL_TELEMETRY_STATE["grid_tie_current"]
+        self.assertIn("grid_connected_current_a", entry["value_template"])
 
     def test_labels_are_the_select_options(self):
         """grid_working_range's HA select reads this key back verbatim."""

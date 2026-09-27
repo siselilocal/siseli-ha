@@ -2,6 +2,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.67] - 2026-09-27
+
+### Added
+
+- **ECO (Programme 08) now reads back the inverter's real state.** The bridge
+  asks the PI30 flag status (`QFLAG`, read only) once a minute; the inverter
+  answered `(EbuvxyDajkz` on 2026-09-27, every letter matching the known
+  settings. Letter `j` is ECO, which no telemetry block carries. New
+  sensor "ECO Power Saving".
+- **Switches for Programme 22 (beeps while the primary source is
+  interrupted) and Programme 25 (fault code record)**, PI30 flags `y` and
+  `z` (`PEy`/`PDy`, `PEz`/`PDz`), read back from the same query. New
+  sensors "Beeps While Primary Source Interrupted" and "Fault Code Record".
+
+### Changed
+
+- The one-off `QFLAG` test of 2.6.66 is replaced by the minute query; its
+  answer is logged only when a flag changes.
+## [2.6.66] - 2026-09-27
+
+### Added
+
+- **The inverter's answer to every command is logged** at warning level, with
+  the command it answers: `[CONTROL] inverter answered PGFC006: (ACK9..`.
+  Until now a refused command (`(NAK`, `^0`) only showed as a read-back that
+  did not move.
+- **Test: PI30 `QFLAG` sent once per dongle connection** (read only). ECO
+  (Programme 08) moves no telemetry field at all -- every field of all 15
+  blocks was compared across ECO on and off in the 2026-09-26 capture -- so
+  the inverter's own flag status is the remaining way to read it back.
+## [2.6.65] - 2026-09-27
+
+### Added
+
+- **"Grid-Tie Current" number (Programme 56), with read-back.** Captured from
+  the vendor app: `PGFC` + 3 digits in amps (`PGFC006` answered `(ACK9`);
+  93VQ token 17 (`grid_connected_current_a`) followed each accepted value.
+  4-40 A in 1 A steps: the inverter refuses 2 A (`(NAKss`, and the front
+  panel stops at 4 A too), and 40 A is the app's maximum. The panel steps by
+  2 A, the command takes any whole amp. It only matters while Programme 44
+  allows feeding the grid.
 ## [2.6.64] - 2026-09-27
 
 ### Fixed

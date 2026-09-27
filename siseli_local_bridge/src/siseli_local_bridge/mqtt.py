@@ -172,13 +172,15 @@ _CONTROL_SWITCHES = {
     "backlight": ("Backlight", "mdi:lightbulb-outline"),
     "buzzer": ("Buzzer", "mdi:volume-high"),
     "dual_output": ("Dual Output", "mdi:electric-switch"),
-    # Programme 08. Optimistic: no telemetry position follows it (the 93VQ
-    # digit once labelled "eco" is Programme 06, found 2026-09-27).
+    # Programme 08. No telemetry block carries it; read back through the
+    # minute's PI30 QFLAG query instead (fakecloud._QFLAG_KEYS).
     "eco": ("ECO Power Saving", "mdi:leaf"),
     "overload_restart": ("Overload Automatic Restart", "mdi:restart"),  # Programme 06
     "over_temperature_restart": ("Over Temperature Automatic Restart", "mdi:thermometer-alert"),  # Programme 07
     "display_return_to_homepage": ("Display Returns To Homepage", "mdi:monitor"),  # Programme 19
+    "primary_source_interrupt_alarm": ("Beeps While Primary Source Interrupted", "mdi:volume-high"),  # Programme 22
     "overload_bypass": ("Overload To Bypass", "mdi:swap-horizontal"),  # Programme 23
+    "fault_code_record": ("Fault Code Record", "mdi:file-document-alert-outline"),  # Programme 25
 }
 #: button suffix -> (label, icon, fakecloud function name to call on press). Kept
 #: as a dict so discovery/subscribe/dispatch below can never drift apart, same
@@ -292,6 +294,7 @@ _CONTROL_NUMBERS = {
     "back_to_grid_voltage": ("Back To Grid Voltage", "mdi:transmission-tower-import"),
     "back_to_battery_voltage": ("Back To Battery Voltage", "mdi:battery-arrow-up"),
     "equalization_voltage": ("Equalization Voltage", "mdi:battery-sync"),
+    "grid_tie_current": ("Grid-Tie Current", "mdi:transmission-tower-export"),  # Programme 56
 }
 
 
@@ -373,6 +376,11 @@ _CONTROL_TELEMETRY_STATE = {
         "group": get_sensor_group("battery_equalization_voltage_v"),
         "value_template": "{{ value_json.battery_equalization_voltage_v }}",
     },
+    # Programme 56: 93VQ token 17, followed PGFC006/PGFC005 on 2026-09-27.
+    "grid_tie_current": {
+        "group": get_sensor_group("grid_connected_current_a"),
+        "value_template": "{{ value_json.grid_connected_current_a }}",
+    },
     # 93VQ token 0, aux pack digit 2 and config pack digit 3: each moved to the
     # exact value sent (POP01, PCP02, PVENGUSE01) on 2026-09-26 and matched the
     # user's settings before the factory reset.
@@ -427,6 +435,22 @@ _CONTROL_TELEMETRY_STATE = {
         "value_template": "{{ value_json.lcd_back_lighting }}",
         "state_on": "On",
         "state_off": "Off",
+    },
+    # Programmes 08, 22, 25: PI30 QFLAG letters j, y, z, asked once a minute.
+    "eco": {
+        "group": get_sensor_group("power_saving_function"),
+        "value_template": "{{ value_json.power_saving_function }}",
+        "state_on": "On", "state_off": "Off",
+    },
+    "primary_source_interrupt_alarm": {
+        "group": get_sensor_group("primary_source_interrupt_alarm"),
+        "value_template": "{{ value_json.primary_source_interrupt_alarm }}",
+        "state_on": "On", "state_off": "Off",
+    },
+    "fault_code_record": {
+        "group": get_sensor_group("fault_code_record"),
+        "value_template": "{{ value_json.fault_code_record }}",
+        "state_on": "On", "state_off": "Off",
     },
 }
 
