@@ -320,8 +320,8 @@ defect was found by running it on someone's hardware, not by reading the code.
 
 ## License
 
-[MIT](LICENSE), covering the contributions made in this repository.
-
-The [upstream project](https://github.com/yuraantonov11/siseli-ha) this was forked from
-carries no licence of its own, so that grant cannot extend to it. [`NOTICE`](NOTICE) sets
-out the distinction, and lists the licences of the bundled dependencies.
+[MIT](LICENSE). This repository is a fork of
+[fadmaz/siseli-ha](https://github.com/fadmaz/siseli-ha) (MIT), itself a fork of
+[yuraantonov11/siseli-ha](https://github.com/yuraantonov11/siseli-ha), which carries no
+licence of its own, so no grant here can extend to that original work. [`NOTICE`](NOTICE)
+sets out the distinction, and lists the licences of the bundled dependencies.

@@ -1,19 +1,20 @@
 # NOTICE
 
-This repository is a fork of [`yuraantonov11/siseli-ha`](https://github.com/yuraantonov11/siseli-ha).
+This repository is a fork of [`fadmaz/siseli-ha`](https://github.com/fadmaz/siseli-ha),
+itself a fork of [`yuraantonov11/siseli-ha`](https://github.com/yuraantonov11/siseli-ha).
 
-**The upstream repository carries no licence file.** Under default copyright, that
-means its author reserves all rights, and no licence to use, modify or redistribute
-the original work has been granted to anyone.
-
-The `LICENSE` file in this repository therefore covers **contributions made here** —
-which, as of 2.6.x, is the substance of the add-on: the parser, the sensor registry,
-the MQTT discovery layer, the state and configuration modules, the test suite, the
-build and CI tooling, and the documentation. It is not, and cannot be, a grant over
-the upstream author's original work.
-
-If you intend to redistribute this project or build on it commercially, and that
-distinction matters to you, seek permission from the upstream author.
+- **fadmaz/siseli-ha** is published under the MIT licence (`LICENSE`, copyright
+  fadmaz). Its work — the parser, the sensor registry, the MQTT discovery layer,
+  the state and configuration modules, the test suite, the build and CI tooling
+  and most of the documentation — is used here under that licence, and the
+  licence text and copyright notice are kept as it requires.
+- **The contributions made in this repository** (the 100% local mode and its
+  inverter controls) are released under the same MIT licence.
+- **yuraantonov11/siseli-ha**, the original project, carries no licence file.
+  Under default copyright its author reserves all rights over that original
+  work, and no licence in this repository can grant any. If you intend to
+  redistribute this project or build on it commercially, and that distinction
+  matters to you, seek permission from that author.
 
 ## Third-party dependencies
 

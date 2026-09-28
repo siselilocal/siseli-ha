@@ -29,7 +29,7 @@ Block positions were reverse-engineered from one device with no schema, so the g
 | `sensor_mapping_verified.md`, `sensor_mapping.md` | Per-token decode map for HPVINV04; the superseded 2.6.0 map | The verified file supersedes its own tables: Section 0 (`:25-124`) is the simultaneous reading, the later tables were 17 minutes apart (`:18-21`) |
 | `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md` | GitHub landing page, dev procedure, security posture, conduct | `README.md` may use relative links; `DOCS.md` may not (`tests/test_packaging.py:227-234`). `SECURITY.md:30-32` states that a wrong `INVERTER_IP` poisons the wrong host by design |
 | `CHANGELOG.md` (root) | A nine-line pointer | Must not carry any `## [N` heading (`tests/test_packaging.py:51-56`); the canonical history is `siseli_local_bridge/CHANGELOG.md` |
-| `LICENSE`, `NOTICE` | MIT; scope statement | Upstream `yuraantonov11/siseli-ha` carries no licence, so the MIT grant covers only work done here (`NOTICE:3-16`) |
+| `LICENSE`, `NOTICE` | MIT; scope statement | Fork of `fadmaz/siseli-ha` (MIT), itself a fork of `yuraantonov11/siseli-ha`, which carries no licence: the MIT grant covers fadmaz's work and the work done here, not that original work (`NOTICE`) |
 | `pyproject.toml`, `repository.yaml` | Dev/CI packaging; the add-on repository manifest | `pyproject.toml:30-36` declares the top-level package as literally `src` because `siseli_local_bridge/` has no `__init__.py` |
 | `CLAUDE.md` | Local agent notes | Untracked by design (`.gitignore:39`) |
 | `docs/` | This file | Not read by any test |
