@@ -35,6 +35,7 @@ export LOG_VERBOSE="$(bashio::config 'LOG_VERBOSE' 'false')"
 # bashio emits one array element per line; the parser accepts either separator.
 export DEBUG_FLAGS="$(bashio::config 'DEBUG_FLAGS' '' | tr '\n' ',')"
 export ENTITY_PREFIX="$(bashio::config 'ENTITY_PREFIX' 'Siseli')"
+export LANGUAGE="$(bashio::config 'LANGUAGE' 'en')"
 export LOG_LEVEL="$(bashio::config 'LOG_LEVEL' 'info')"
 export UPDATE_INTERVAL_SEC="$(bashio::config 'UPDATE_INTERVAL_SEC' '10')"
 export EXPIRE_AFTER_SEC="$(bashio::config 'EXPIRE_AFTER_SEC' '1800')"

@@ -110,6 +110,7 @@ in step 3 above.
 | `DEVICE_NAME` | `Siseli Local Inverter 1` | Shown in Home Assistant |
 | `MODEL_NAME` / `MANUFACTURER` | `Siseli Local Inverter 1` / `Siseli Compatible` | Cosmetic |
 | `ENTITY_PREFIX` | `Siseli` | Prefixed to every entity name |
+| `LANGUAGE` | `en` | Language of the entity names: `en` (English) or `fr` (French). Names only; entity IDs do not change |
 | `INVERTER_COUNT` | `1` | Scales the calculated power sensors — see below |
 | `BATTERY_COUNT` | `1` | |
 | `BATTERY_CAPACITY_PER_BATTERY_AH` | `0.0` | `0` disables the configured bank-capacity sensor |

@@ -6,6 +6,7 @@ import paho.mqtt.client as mqtt
 
 from . import state as _state
 from .config import *
+from .i18n import translate_group_title, translate_name
 from .loggers import log, log_error_always
 from .sensors import (
     SENSOR_GROUP_TITLES,
@@ -33,7 +34,7 @@ def _trim_section_prefix(name: str) -> str:
 
 
 def display_sensor_name(base_name: str) -> str:
-    trimmed = _trim_section_prefix(base_name)
+    trimmed = translate_name(_trim_section_prefix(base_name), LANGUAGE)
     return f"{ENTITY_PREFIX} {trimmed}".strip() if ENTITY_PREFIX else trimmed
 
 
@@ -90,7 +91,7 @@ def device_info(group: str) -> Dict[str, object]:
             "model": MODEL_NAME,
             **wire_identity(),
         }
-    group_title = get_group_title(group)
+    group_title = translate_group_title(get_group_title(group), LANGUAGE)
     group_device_id = device_id_for_group(group)
     return {
         "identifiers": [group_device_id],

@@ -1,6 +1,6 @@
 # ☀️ Siseli Local Bridge for Home Assistant
 
-[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.73-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
+[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.74-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
 [![HA Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-green.svg)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
@@ -16,7 +16,7 @@ publishes it to Home Assistant through MQTT auto-discovery. It runs in one of tw
   become Home Assistant controls. See [100% local mode](#100-local-mode).
 
 **205 sensors across 7 devices**, 146 enabled on a fresh install, plus the controls of
-the 100% local mode.
+the 100% local mode. Entity names in English or French (`LANGUAGE` option).
 
 > **Acknowledgment:** a fork of [fadmaz/siseli-ha](https://github.com/fadmaz/siseli-ha)
 > and its **Siseli Inverter Bridge**, itself an expanded fork of

@@ -74,6 +74,9 @@ configuration:
   ENTITY_PREFIX:
     name: 'Entity ID Prefix'
     description: "The prefix attached to all individual sensors (e.g., 'Siseli'). Useful if running multiple instances side-by-side."
+  LANGUAGE:
+    name: 'Entity Name Language'
+    description: 'Language of the entity names shown in Home Assistant: en (English, default) or fr (French). Only the names change; entity IDs, automations and dashboards keep working.'
   INVERTER_COUNT:
     name: 'Inverter Count'
     description: 'Number of inverters in your parallel setup. Calculated c_ power sensors use this count for scaling.'

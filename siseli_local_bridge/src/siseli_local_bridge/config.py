@@ -121,6 +121,9 @@ DEVICE_NAME = os.getenv("DEVICE_NAME", "Siseli Local Inverter 1")
 MODEL_NAME = os.getenv("MODEL_NAME", DEVICE_NAME)
 MANUFACTURER = os.getenv("MANUFACTURER", "Siseli Compatible")
 ENTITY_PREFIX = os.getenv("ENTITY_PREFIX", "").strip()
+# Language of the entity names shown in Home Assistant (i18n.py). Names only:
+# unique_ids, entity_ids and state values stay English.
+LANGUAGE = os.getenv("LANGUAGE", "en").strip().lower() or "en"
 INVERTER_COUNT = int(os.getenv("INVERTER_COUNT", "1"))
 BATTERY_COUNT = int(os.getenv("BATTERY_COUNT", "1"))
 BATTERY_CAPACITY_PER_BATTERY_AH = float(os.getenv("BATTERY_CAPACITY_PER_BATTERY_AH", "0.0"))
@@ -377,6 +380,9 @@ def validate_config() -> None:
             f"Assistant's MQTT discovery cannot match; using {DEVICE_ID!r} instead.",
             flush=True,
         )
+
+    if LANGUAGE not in ("en", "fr"):
+        errors.append(f"LANGUAGE must be 'en' or 'fr', got {LANGUAGE!r}")
 
     if INVERTER_COUNT < 1:
         errors.append(f"INVERTER_COUNT must be >= 1, got {INVERTER_COUNT}")

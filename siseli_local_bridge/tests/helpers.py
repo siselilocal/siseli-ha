@@ -38,6 +38,7 @@ BASE_ENV = {
     "MODEL_NAME": "Siseli Local Inverter 1",
     "MANUFACTURER": "Siseli Compatible",
     "ENTITY_PREFIX": "Siseli",
+    "LANGUAGE": "en",
     "INVERTER_COUNT": "1",
     "BATTERY_COUNT": "1",
     "BATTERY_CAPACITY_PER_BATTERY_AH": "0.0",

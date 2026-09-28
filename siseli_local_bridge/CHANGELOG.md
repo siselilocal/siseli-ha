@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.74] - 2026-09-27
+
+### Added
+
+- **`LANGUAGE` option: entity names in English (`en`, default) or French
+  (`fr`).** Every sensor, control and device-group name has a French
+  translation (`i18n.py`; a test fails if a new name lacks one). Only the
+  displayed names change: unique_ids, entity_ids, topics and state values stay
+  English, so automations and dashboards keep working after switching.
 ## [2.6.73] - 2026-09-27
 
 ### Removed

@@ -1,6 +1,6 @@
 name: 'Siseli Local Bridge'
 description: 'Local bridge for Siseli-compatible inverters with MQTT discovery for Home Assistant.'
-version: '2.6.73'
+version: '2.6.74'
 slug: 'siseli_local_bridge'
 url: 'https://github.com/siselilocal/siseli-ha'
 init: false
@@ -43,6 +43,7 @@ options:
   MODEL_NAME: 'Siseli Local Inverter 1'
   MANUFACTURER: 'Siseli Compatible'
   ENTITY_PREFIX: 'Siseli'
+  LANGUAGE: 'en'
   INVERTER_COUNT: 1
   BATTERY_COUNT: 1
   BATTERY_CAPACITY_PER_BATTERY_AH: 0.0
@@ -91,6 +92,7 @@ schema:
   MODEL_NAME: str
   MANUFACTURER: str
   ENTITY_PREFIX: str?
+  LANGUAGE: list(en|fr)
   INVERTER_COUNT: int(1,32)
   BATTERY_COUNT: int(1,64)
   BATTERY_CAPACITY_PER_BATTERY_AH: float(0,)

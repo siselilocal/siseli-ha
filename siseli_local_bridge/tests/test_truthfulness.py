@@ -762,6 +762,30 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             self.assertIn(setting, mqtt._CONTROL_TELEMETRY_STATE)
         self.assertIn("power_saving_function", mqtt._CONTROL_TELEMETRY_STATE["eco"]["value_template"])
 
+    def test_every_entity_name_has_a_french_translation(self):
+        """LANGUAGE=fr: every sensor and control name, and every device group
+        title, has a French entry -- a new entity cannot silently stay English."""
+        from src.siseli_local_bridge import i18n, mqtt
+        from src.siseli_local_bridge.sensors import SENSOR_GROUP_TITLES, SENSORS
+        names = {mqtt._trim_section_prefix(str(meta["name"])) for meta in SENSORS.values()}
+        for table in (mqtt._CONTROL_SWITCHES, mqtt._CONTROL_BUTTONS, mqtt._CONTROL_SELECTS, mqtt._CONTROL_NUMBERS):
+            names |= {entry[0] for entry in table.values()}
+        self.assertEqual(sorted(n for n in names if n not in i18n.FR_NAMES), [])
+        self.assertEqual(sorted(t for t in SENSOR_GROUP_TITLES.values() if t not in i18n.FR_GROUP_TITLES), [])
+        self.assertEqual(i18n.translate_name("Battery Voltage", "fr"), "Tension batterie")
+        self.assertEqual(i18n.translate_name("Battery Voltage", "en"), "Battery Voltage")
+        self.assertEqual(i18n.translate_name("Not A Name", "fr"), "Not A Name")
+
+    def test_language_changes_the_name_only(self):
+        from unittest import mock
+        from src.siseli_local_bridge import mqtt
+        with mock.patch.object(mqtt, "LANGUAGE", "fr"), mock.patch.object(mqtt, "ENTITY_PREFIX", "Siseli"):
+            self.assertEqual(mqtt.display_sensor_name("Battery Status - Battery Voltage"), "Siseli Tension batterie")
+            self.assertEqual(mqtt.device_info("battery")["name"].split()[-1], "Batterie")
+            self.assertEqual(mqtt.device_info("battery")["identifiers"], [mqtt.device_id_for_group("battery")])
+        with mock.patch.object(mqtt, "LANGUAGE", "en"), mock.patch.object(mqtt, "ENTITY_PREFIX", "Siseli"):
+            self.assertEqual(mqtt.display_sensor_name("Battery Status - Battery Voltage"), "Siseli Battery Voltage")
+
     def test_max_charging_current_sends_the_captured_frames(self):
         """Programme 02, 2026-09-27: the vendor app's MNCHGC frames; the
         inverter NAKed anything off the 10 A grid."""
