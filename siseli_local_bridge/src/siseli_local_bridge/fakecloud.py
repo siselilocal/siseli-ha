@@ -644,13 +644,15 @@ SELECT_SETTINGS = {
         # grid voltage/frequency window the inverter accepts. Captured from the
         # vendor app 2026-09-27 (captures/2026-09-27_real-cloud_prog50.pcap):
         # "^S???RS03" + CRC16/XMODEM 0xB0D5 for Mode 4, answered "^1", and the
-        # next read-back moved as expected. Mode n = code n-1. Mode 3 (57-62 Hz)
-        # is deliberately not offered: on a 50 Hz grid it would make the
-        # inverter treat the grid as absent.
+        # next read-back moved as expected. Mode n = code n-1. All five modes
+        # are offered (the user's choice, 2026-09-28: other countries need
+        # them); the select labels show each mode's window, so Mode 3's 57-62 Hz
+        # is visible before anyone picks it on a 50 Hz grid.
         "channel": "^S???RS",
         "options": {
             "mode_1": "00",
             "mode_2": "01",
+            "mode_3": "02",
             "mode_4": "03",
             "mode_5": "04",
         },

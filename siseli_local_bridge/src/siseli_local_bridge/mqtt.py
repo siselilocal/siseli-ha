@@ -6,7 +6,7 @@ import paho.mqtt.client as mqtt
 
 from . import state as _state
 from .config import *
-from .i18n import translate_group_title, translate_name
+from .i18n import GRID_MODES, grid_mode_label, translate_group_title, translate_name
 from .loggers import log, log_error_always
 from .sensors import (
     SENSOR_GROUP_TITLES,
@@ -252,15 +252,11 @@ _CONTROL_SELECTS = {
         {f"{a} A": f"{a}" for a in (2, 10, 20, 30, 40, 50, 60, 70, 80, 90)},
     ),
     "grid_regulation_mode": (
-        # Programme 50. Labels are parsers.py's grid_regulation_mode values;
-        # Mode 3 (60 Hz only) is left out on purpose, see fakecloud.
+        # Programme 50. Each option shows the mode's accepted voltage and
+        # frequency (i18n.GRID_MODES); the read-back maps parsers.py's
+        # "Mode n" onto the same label (_CONTROL_TELEMETRY_STATE below).
         "Grid Regulation Mode", "mdi:transmission-tower",
-        {
-            "Mode 1": "mode_1",
-            "Mode 2": "mode_2",
-            "Mode 4": "mode_4",
-            "Mode 5": "mode_5",
-        },
+        {grid_mode_label(n, LANGUAGE): f"mode_{n}" for n in GRID_MODES},
     ),
     "battery_type": (
         # Labels are parsers.py's battery_type values verbatim, so the
@@ -342,7 +338,11 @@ _CONTROL_TELEMETRY_STATE = {
     },
     "grid_regulation_mode": {
         "group": get_sensor_group("grid_regulation_mode"),
-        "value_template": "{{ value_json.grid_regulation_mode }}",
+        # "Mode 1" (telemetry) -> the select's full label for that mode.
+        "value_template": (
+            "{{ " + json.dumps({f"Mode {n}": grid_mode_label(n, LANGUAGE) for n in GRID_MODES}, ensure_ascii=False)
+            + ".get(value_json.grid_regulation_mode, value_json.grid_regulation_mode) }}"
+        ),
     },
     "battery_type": {
         "group": get_sensor_group("battery_type"),

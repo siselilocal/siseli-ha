@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.75] - 2026-09-28
+
+### Changed
+
+- **Grid Regulation Mode (Programme 50) shows each mode's window and offers
+  all five modes.** Options now read e.g. "Mode 1 IND (195.5-253 VAC, 49-51 Hz)"
+  (French: "Mode 1 IND (195,5-253 VAC : 49-51 Hz)"), from the manual's revised
+  Programme 50 table, with the front panel's region code (IND, GEn, SAd,
+  PAk, U2b). Mode 3 (57-62 Hz) is offered again: other countries need it,
+  and its label now shows the 60 Hz window. The read-back maps the
+  inverter's "Mode n" onto the same label.
+
 ## [2.6.74] - 2026-09-27
 
 ### Added

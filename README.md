@@ -1,6 +1,6 @@
 # ☀️ Siseli Local Bridge for Home Assistant
 
-[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.74-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
+[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.75-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
 [![HA Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-green.svg)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
@@ -248,7 +248,7 @@ and 25 appear in no telemetry block, so the add-on asks the inverter's flag stat
 | Restore Battery Discharging SOC | 40 | 5–95 %, steps of 5 |
 | Inverter Startup SOC | 41 | 5–100 %, steps of 5 |
 | Solar Supply Priority | 43 | BLU / LBU |
-| Grid Regulation Mode | 50 | Mode 1 / 2 / 4 / 5 (Mode 3 is 60 Hz only, left out) |
+| Grid Regulation Mode | 50 | Mode 1 IND … Mode 5 U2b, each labelled with its accepted voltage and frequency (Mode 3 SAd is the 57–62 Hz one) |
 | Sync Inverter Clock (button) | 51–55 | sets the inverter's date and time to Home Assistant's |
 | Grid-Tie Current | 56 | 4–40 A (the inverter refuses less than 4 A) |
 | Dual Output | 60 | on / off |

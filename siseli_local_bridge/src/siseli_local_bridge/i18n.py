@@ -249,6 +249,29 @@ FR_GROUP_TITLES: Dict[str, str] = {
 }
 
 
+#: Programme 50 ("Set country customized regulations"): accepted feed-in grid
+#: voltage and frequency per mode, from the manual's revised page 27 (the
+#: older page 25 only listed India / Germany / South America). The code is the
+#: one the front panel shows. Mode 5 is the manual's default; this firmware
+#: shipped at Mode 4.
+GRID_MODES = {
+    1: ("IND", "195.5-253", "49-51"),
+    2: ("GEn", "184-264.5", "47.5-51.5"),
+    3: ("SAd", "184-264.5", "57-62"),
+    4: ("PAk", "170-264.5", "47.5-53.5"),
+    5: ("U2b", "100-280", "47.5-53.5"),
+}
+
+
+def grid_mode_label(mode: int, language: str) -> str:
+    """"Mode 1 IND (195.5-253 VAC, 49-51 Hz)" / "Mode 1 IND (195,5-253 VAC : 49-51 Hz)".
+    The code is the one the front panel shows (country / region abbreviation)."""
+    code, volts, hertz = GRID_MODES[mode]
+    if language == "fr":
+        return f"Mode {mode} {code} ({volts.replace('.', ',')} VAC : {hertz.replace('.', ',')} Hz)"
+    return f"Mode {mode} {code} ({volts} VAC, {hertz} Hz)"
+
+
 def translate_name(name: str, language: str) -> str:
     """The displayed name in `language`; English (unchanged) if unknown."""
     if language == "fr":

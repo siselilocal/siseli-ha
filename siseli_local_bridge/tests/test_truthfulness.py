@@ -659,17 +659,31 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
 
     def test_grid_regulation_mode_select_sends_the_captured_frame(self):
         import base64
+        import json
         from src.siseli_local_bridge import fakecloud, mqtt
         d = fakecloud.SELECT_SETTINGS["grid_regulation_mode"]
         frame = base64.b64decode(fakecloud.build_write_ci(d["channel"], d["options"]["mode_4"]))
         self.assertEqual(frame, b"^S???RS03\xb0\xd5\r")  # the vendor app's own frame
         _, _, options = mqtt._CONTROL_SELECTS["grid_regulation_mode"]
-        self.assertNotIn("Mode 3", options)  # 60 Hz only
+        self.assertEqual(len(options), 5)  # Modes 1-5, Mode 3 included (2026-09-28)
+        self.assertIn("Mode 1 IND (195.5-253 VAC, 49-51 Hz)", options)
+        self.assertIn("Mode 3 SAd (184-264.5 VAC, 57-62 Hz)", options)
+        # The read-back template maps the parser's "Mode n" onto the option label.
+        template = mqtt._CONTROL_TELEMETRY_STATE["grid_regulation_mode"]["value_template"]
+        mapping = json.loads(template[3:template.index(".get(")])
         for label, key in options.items():
             with self.subTest(label):
                 code = d["options"][key]
                 vq = b"(1 060 002 1" + code[1:].encode() + b"611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 020 0 0 \r"
-                self.assertEqual(SolarParser._try_ascii_schema({"93VQ": vq})["grid_regulation_mode"], label)
+                parsed = SolarParser._try_ascii_schema({"93VQ": vq})["grid_regulation_mode"]
+                self.assertEqual(parsed, f"Mode {int(code) + 1}")
+                self.assertEqual(mapping[parsed], label)
+
+    def test_grid_regulation_mode_labels_in_french(self):
+        from src.siseli_local_bridge import i18n
+        self.assertEqual(i18n.grid_mode_label(1, "fr"), "Mode 1 IND (195,5-253 VAC : 49-51 Hz)")
+        self.assertEqual(i18n.grid_mode_label(4, "fr"), "Mode 4 PAk (170-264,5 VAC : 47,5-53,5 Hz)")
+        self.assertEqual(i18n.grid_mode_label(5, "en"), "Mode 5 U2b (100-280 VAC, 47.5-53.5 Hz)")
 
     def test_clock_sync_sends_local_time_as_pi18_dat(self):
         import base64
