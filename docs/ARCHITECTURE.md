@@ -6,11 +6,16 @@ Anchors: a bare `core.py:N` means `siseli_local_bridge/src/siseli_local_bridge/c
 
 ## What this is
 
+> **Scope of this document.** It was written for the pass-through bridge inherited from
+> `fadmaz/siseli-ha` (2.6.19) and still describes that core. The **100% local mode**
+> added in this fork (`LOCAL_CLOUD_IP` set) is summarised in the section of that name
+> below; there, the statements about observing without answering do not hold.
+
 A Home Assistant add-on that ARP-spoofs a Siseli-platform solar inverter and its router so both send their frames through the bridge (`core.py:172-207`).
 It passively reassembles the inverter's TCP stream to the vendor MQTT cloud (`parsers.py:505`), extracts the MQTT PUBLISH packets (`parsers.py:363`), and decodes the base64 "blocks" inside each one into sensor values (`parsers.py:1274`).
 Values merge into one shared dict (`state.py:12`) and are republished to the local broker under HA MQTT auto-discovery (`mqtt.py:124`, `mqtt.py:278`).
 Every captured frame is re-emitted to its real destination (`core.py:320-325`, `core.py:355-360`), so the vendor app keeps working.
-The bridge observes; it never terminates or answers a connection. Only the inverter-to-cloud direction is parsed; cloud-to-inverter is forwarded untouched (`core.py:348-360`).
+In pass-through mode the bridge observes; it never terminates or answers a connection. Only the inverter-to-cloud direction is parsed; cloud-to-inverter is forwarded untouched (`core.py:348-360`).
 Block positions were reverse-engineered from one device with no schema, so the governing rule of the parser is: publish a value only when this payload contains evidence for it.
 
 ## Top-level layout
@@ -18,7 +23,7 @@ Block positions were reverse-engineered from one device with no schema, so the g
 | Path | What it is | One non-obvious fact |
 |---|---|---|
 | `siseli_local_bridge/` | The add-on: Docker build context, manifest, runtime, tests | It is the *only* thing that reaches the image (`siseli_local_bridge/Dockerfile:24` `COPY . .`, `scripts/smoke-test.sh:30`); root-level docs and `captures/` never ship |
-| `siseli_local_bridge/src/siseli_local_bridge/` | The runtime, eight modules | The package path is `src.siseli_local_bridge` because `run.sh:46` execs `python3 -m src.siseli_local_bridge.core`; tests patch `src.siseli_local_bridge.<module>` |
+| `siseli_local_bridge/src/siseli_local_bridge/` | The runtime: the eight pass-through modules below, plus the 100% local mode modules | The package path is `src.siseli_local_bridge` because `run.sh:46` execs `python3 -m src.siseli_local_bridge.core`; tests patch `src.siseli_local_bridge.<module>` |
 | `siseli_local_bridge/tests/` | 11 test files, `helpers.py`, `captures.py`, `conftest.py` | Excluded from the image (`siseli_local_bridge/.dockerignore:10`); `conftest.py` puts `siseli_local_bridge/` on `sys.path` so imports mirror the runtime path |
 | `siseli_local_bridge/config.yaml`, `Dockerfile`, `run.sh`, `requirements.txt`, `.dockerignore`, `icon.png`, `logo.png` | Add-on manifest and build inputs | `config.yaml` has no `image:` key and there is no `build.yaml`, so Supervisor builds locally from the Dockerfile (`tests/test_packaging.py:428-433`) |
 | `siseli_local_bridge/DOCS.md`, `siseli_local_bridge/CHANGELOG.md` | The HA Documentation tab and Changelog tab | Only `CHANGELOG.md` ships in the image (`.dockerignore:28-29`); Supervisor reads `DOCS.md` from the repo checkout |
@@ -48,6 +53,29 @@ Block positions were reverse-engineered from one device with no schema, so the g
 | `config.py` | 303 | Every option via `os.getenv` at import (`:9-95`), internal tuning constants (`:5-7`, `:162-175`), `validate_config` (`:176`) |
 | `loggers.py` | 91 | `print`-based logger; level bound at import (`:24`); `log` (`:31`), `log_kv` (`:48`), `log_error_always` (`:36`), `hex_preview` (`:70`) |
 | `version.py` | 7 | `__version__` (`:7`), the single source for the version string |
+
+100% local mode modules (added in this fork, no line anchors):
+
+| Module | Owns |
+|---|---|
+| `fakecloud.py` | The impersonated vendor MQTT broker: CONNECT/SUBSCRIBE/PUBLISH handling, the telemetry poll (`i=501`), the inverter commands (`i=503`: switches, selects, numbers, buttons, a fixed list), the minute `QFLAG` query and the logging of the inverter's answers |
+| `tcpstack.py` | A userspace TCP endpoint on raw frames for `LOCAL_CLOUD_IP`, since no kernel socket may take the connection |
+| `httpstub.py` | The dongle's HTTP bootstrap API on port 80 |
+| `dnsspoof.py` | A-record answers with `LOCAL_CLOUD_IP` for names under `DNS_SPOOF_DOMAIN` |
+| `firewall.py` | The single `nftables` raw/PREROUTING DROP for `LOCAL_CLOUD_IP` ports 80 and 1883, installed at start and removed at stop |
+| `pi30.py` | Voltronic PI30 frame detection and decoding |
+| `i18n.py` | Entity-name translations for the `LANGUAGE` option, and the Programme 50 mode labels |
+
+## 100% local mode
+
+With `LOCAL_CLOUD_IP` set, the add-on stops relaying the dongle to the vendor cloud and
+becomes its cloud: `dnsspoof` sends the dongle to `LOCAL_CLOUD_IP`, `httpstub` answers
+its bootstrap, `tcpstack` + `fakecloud` hold its MQTT session, `firewall` keeps kernel
+sockets (the Mosquitto add-on on `0.0.0.0:1883`) off that address. Telemetry replies go
+through the same `SolarParser.parse_payload` as in pass-through. Controls published by
+`mqtt.py` reach `fakecloud` send functions, which only ever send entries of their own
+command tables; each control reads its value back from the inverter (telemetry or
+`QFLAG`) rather than echoing what was sent. See `SECURITY.md` for what this changes.
 
 ### Packet-to-publish data path
 

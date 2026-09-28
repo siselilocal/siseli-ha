@@ -295,9 +295,12 @@ Assistant host yourself. This works only if all three hold:
 3. **The traffic is actually on the wire.** A **switch port mirror (SPAN)** to the Home
    Assistant host is the cleanest way to satisfy all of this, and is fully passive.
 
-> **A DNS override does not work.** Pointing the Siseli domain at Home Assistant produces
-> nothing, because there is no listener — the bridge observes traffic, it does not
-> terminate it. The inverter's connection simply fails.
+> **In pass-through mode, a DNS override does not work.** Pointing the Siseli domain at
+> Home Assistant produces nothing, because in that mode there is no listener — the bridge
+> observes traffic, it does not terminate it. The inverter's connection simply fails.
+> In [100% local mode](#100-local-mode) the opposite holds: the add-on answers on
+> `LOCAL_CLOUD_IP`, and a DNS record in your router pointing the two Siseli names there
+> is the recommended setup.
 
 ---
 

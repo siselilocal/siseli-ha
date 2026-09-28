@@ -77,7 +77,7 @@ body:
     attributes:
       label: Add-on log
       description: |
-        Settings → Add-ons → Siseli Inverter Bridge → Log. Include the startup banner and
+        Settings → Add-ons → Siseli Local Bridge → Log. Include the startup banner and
         several minutes of running output — the `[Config]` lines it prints are usually
         what identifies the problem.
       render: text
