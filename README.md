@@ -1,6 +1,6 @@
 # ☀️ Siseli Local Bridge for Home Assistant
 
-[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.75-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
+[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.79-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
 [![HA Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-green.svg)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
@@ -15,7 +15,7 @@ publishes it to Home Assistant through MQTT auto-discovery. It runs in one of tw
   Home Assistant host, readings refresh every 15 seconds, and the inverter's settings
   become Home Assistant controls. See [100% local mode](#100-local-mode).
 
-**205 sensors across 7 devices**, 146 enabled on a fresh install, plus the controls of
+**204 sensors across 7 devices**, 146 enabled on a fresh install, plus the controls of
 the 100% local mode. Entity names in English or French (`LANGUAGE` option).
 
 > **Acknowledgment:** a fork of [fadmaz/siseli-ha](https://github.com/fadmaz/siseli-ha)
@@ -66,7 +66,7 @@ vendor app keeps working. You lose the Home Assistant sensors, nothing else.
 
 ## Known limitations
 
-**40 of the 205 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
+**39 of the 204 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
 with hardcoded constants — fault flags that could never report a fault, a `Mode` that was
 a fixed string in the source. Those were removed in 2.6.1. The entities remain, disabled
 by default, and publish an explicit "no value" rather than a comforting lie. If your
@@ -218,7 +218,7 @@ The addresses below are **examples**; use your own.
 Every control shows the value **read back from the inverter**, not the last value sent:
 if the inverter refuses or adjusts a setting, the entity shows what it really holds. The
 commands follow the Voltronic PI30 protocol the inverter speaks (PI18 for programme 50
-and the clock); each one below was checked on the test hardware. ECO and programmes 22
+and the clock, PI17 for programmes 46/47); each one below was checked on the test hardware. ECO and programmes 22
 and 25 appear in no telemetry block, so the add-on asks the inverter's flag status
 (`QFLAG`, read only) once a minute to read them back.
 
@@ -248,6 +248,7 @@ and 25 appear in no telemetry block, so the add-on asks the inverter's flag stat
 | Restore Battery Discharging SOC | 40 | 5–95 %, steps of 5 |
 | Inverter Startup SOC | 41 | 5–100 %, steps of 5 |
 | Solar Supply Priority | 43 | BLU / LBU |
+| AC Charging Start Time / Stop Time | 46 / 47 | 00:00–23:00; outside this window the grid does not charge the battery (00:00–00:00 = no limit) |
 | Grid Regulation Mode | 50 | Mode 1 IND … Mode 5 U2b, each labelled with its accepted voltage and frequency (Mode 3 SAd is the 57–62 Hz one) |
 | Sync Inverter Clock (button) | 51–55 | sets the inverter's date and time to Home Assistant's |
 | Grid-Tie Current | 56 | 4–40 A (the inverter refuses less than 4 A) |

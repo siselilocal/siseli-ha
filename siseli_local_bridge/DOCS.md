@@ -160,7 +160,7 @@ opened a socket. You can ignore the `[CONFIG WARNING]` about it.
 
 ## What you get
 
-**205 sensors across 7 devices.** 146 are enabled on a fresh install; the rest are
+**204 sensors across 7 devices.** 146 are enabled on a fresh install; the rest are
 disabled by default and can be switched on individually in Home Assistant.
 
 | Device | Sensors | Covers |

@@ -123,6 +123,20 @@ class TestSingleWriterPerKey(_ParserTestCase):
         self.assertNotIn("mains_charging_starting_time", state)
         self.assertNotIn("mains_charging_ending_time", state)
 
+    def test_dhrk_token_11_is_the_ac_charger_window(self):
+        """Front panel 2026-09-29: Programme 46 = 12:00 moved dHrK[11] 0000 -> 1200,
+        then Programme 47 = 13:00 -> 1213. Token 12 did not move: not the stop hour."""
+        base = b"(0 044.0 020 044.0 044.0 048.0 0 056.0 060 120 030 %s 0000 05 0000 52.0 50000\r"
+        for token, start, stop in ((b"0000", "00:00", "00:00"), (b"1200", "12:00", "00:00"), (b"1213", "12:00", "13:00")):
+            with self.subTest(token=token):
+                state = SolarParser._try_ascii_schema({"dHrK": base % token})
+                self.assertEqual(state["ac_charging_start_time"], start)
+                self.assertEqual(state["ac_charging_stop_time"], stop)
+                self.assertNotIn("output_starting_time", state)
+                self.assertNotIn("output_ending_time", state)
+        state = SolarParser._try_ascii_schema({"dHrK": base % b"2599"})
+        self.assertNotIn("ac_charging_start_time", state)
+
     def test_93vq_token_18_is_programme_44_solar_feed_to_grid(self):
         """2026-09-27: GtE on the front panel moved 93VQ[18] 0 -> 1, GtD back."""
         gtd = b"(1 060 002 10611110240 002 0 1 1 0 1 015 025 030 020 056.4 056.4 042.0 004 0 0 \r"
@@ -446,6 +460,83 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             self.assertTrue(fakecloud.send_control_number("bms_restore_mains_charging_soc", 20))
             self.assertTrue(fakecloud.send_control_number("bms_inverter_startup_soc", 100))
             self.assertEqual(send.call_count, 2)
+
+    def test_ac_charging_window_sends_both_hours_in_one_frame(self):
+        """2026-09-29: ^S???ACCT1200,1400 answered ^1 and read back 1200,1400. The
+        hour not being changed comes from the last read-back."""
+        import base64
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        snapshot = {"ac_charging_start_time": "12:00", "ac_charging_stop_time": "13:00"}
+        with mock.patch.object(shared_state, "snapshot_state", return_value=snapshot), \
+                mock.patch.object(fakecloud, "_send_control_ci", return_value=True) as send:
+            self.assertTrue(fakecloud.send_ac_charging_window(stop_hour=14))
+            frame = base64.b64decode(send.call_args[0][0])
+            self.assertEqual(frame[:-3], b"^S???ACCT1200,1400")
+            self.assertEqual(frame, fakecloud.base64.b64decode(fakecloud.build_write_ci("^S???ACCT", "1200,1400")))
+            self.assertTrue(fakecloud.send_ac_charging_window(start_hour=0))
+            self.assertEqual(base64.b64decode(send.call_args[0][0])[:-3], b"^S???ACCT0000,1300")
+
+    def test_ac_charging_window_refuses_without_the_other_hour(self):
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        snapshot = {"ac_charging_start_time": None, "ac_charging_stop_time": "13:00"}
+        with mock.patch.object(shared_state, "snapshot_state", return_value=snapshot), \
+                mock.patch.object(fakecloud, "_send_control_ci", return_value=True) as send:
+            self.assertFalse(fakecloud.send_ac_charging_window(stop_hour=14))
+            self.assertFalse(fakecloud.send_ac_charging_window(start_hour=24, stop_hour=1))
+            send.assert_not_called()
+
+    def test_ac_charging_selects_route_to_the_window_command(self):
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt as mqtt_module
+        mqtt_module._CONTROL_LAST_SENT.clear()
+        with mock.patch.object(fakecloud, "send_ac_charging_window", return_value=True) as send, \
+                mock.patch.object(mqtt_module, "client"):
+            mqtt_module._handle_control_message(
+                mqtt_module.control_command_topic("ac_charging_stop_time"), b"14:00")
+            send.assert_called_once_with(stop_hour=14)
+            mqtt_module._handle_control_message(
+                mqtt_module.control_command_topic("ac_charging_start_time"), b"25:00")
+            send.assert_called_once()
+
+    def test_entity_ids_stay_english_whatever_the_language(self):
+        """2.6.77 created its two new sensors with French ids under LANGUAGE=fr
+        (…_diagnostic_siseli_heure_de_debut_de_charge_secteur): HA builds the id
+        from the displayed names. default_entity_id pins the English one."""
+        import json
+        from unittest import mock
+        from src.siseli_local_bridge import mqtt as mqtt_module
+        with mock.patch.multiple(mqtt_module, LANGUAGE="fr", DEVICE_NAME="Siseli Local Inverter 1",
+                                 ENTITY_PREFIX="Siseli"), \
+                mock.patch.object(mqtt_module, "client") as client:
+            mqtt_module.publish_sensor_discovery("ac_charging_start_time")
+            mqtt_module.publish_control_discovery()
+            payloads = {json.loads(c[0][1])["unique_id"]: json.loads(c[0][1])
+                        for c in client.publish.call_args_list if c[0][0].endswith("/config")}
+        sensor = payloads[f"{mqtt_module.DEVICE_ID}_diagnostics_ac_charging_start_time"]
+        self.assertEqual(sensor["name"], "Siseli Heure de début de charge secteur")
+        self.assertEqual(sensor["default_entity_id"],
+                         "sensor.siseli_local_inverter_1_diagnostics_siseli_ac_charging_start_time")
+        hour_select = payloads[f"{mqtt_module.DEVICE_ID}_ac_charging_start_time"]
+        self.assertEqual(hour_select["default_entity_id"],
+                         "select.siseli_local_inverter_1_siseli_ac_charging_start_time")
+        self.assertEqual(hour_select["entity_category"], "config")
+        self.assertEqual(len(hour_select["options"]), 24)
+        self.assertIn("12:00", hour_select["options"])
+        select = payloads[f"{mqtt_module.DEVICE_ID}_output_source_priority"]
+        self.assertEqual(select["default_entity_id"], "select.siseli_local_inverter_1_siseli_output_source_priority")
+        for payload in payloads.values():
+            self.assertRegex(payload["default_entity_id"], r"^[a-z]+\.[a-z0-9_]+$")
+
+    def test_raw_probe_is_gone(self):
+        """The 2.6.76 probe found the ACCT command and was removed in 2.6.79."""
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt as mqtt_module
+        self.assertFalse(hasattr(fakecloud, "send_raw_command"))
+        with mock.patch.object(mqtt_module, "client") as client:
+            mqtt_module.subscribe_control_topics()
+            self.assertNotIn("raw_command", str(client.subscribe.call_args_list))
 
     def test_lock_machine_soc_never_reaches_the_current_soc(self):
         """Programme 38 shuts the inverter down below it -- and the inverter powers

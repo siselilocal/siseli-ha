@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from typing import Dict
 
@@ -36,6 +37,23 @@ def _trim_section_prefix(name: str) -> str:
 def display_sensor_name(base_name: str) -> str:
     trimmed = translate_name(_trim_section_prefix(base_name), LANGUAGE)
     return f"{ENTITY_PREFIX} {trimmed}".strip() if ENTITY_PREFIX else trimmed
+
+
+def default_entity_id(domain: str, group: str, base_name: str) -> str:
+    """The entity_id Home Assistant would build from the ENGLISH device and entity
+    names, whatever LANGUAGE is: "<domain>.<device name>_<entity name>", slugified.
+
+    HA builds a new entity's id from its displayed names, so with LANGUAGE=fr a
+    sensor created after the switch got a French id (…_diagnostic_siseli_heure_de_…)
+    while every older one kept its English id. Sent as `default_entity_id`, which
+    HA only reads when it first creates an entity: existing ids never move.
+    """
+    device = DEVICE_NAME if group == "main" else f"{DEVICE_NAME} {get_group_title(group)}"
+    name = _trim_section_prefix(base_name)
+    if ENTITY_PREFIX:
+        name = f"{ENTITY_PREFIX} {name}"
+    slug = re.sub(r"[^a-z0-9]+", "_", f"{device} {name}".lower()).strip("_")
+    return f"{domain}.{slug}"
 
 
 def device_id_for_group(group: str) -> str:
@@ -134,6 +152,7 @@ def publish_sensor_discovery(key: str) -> None:
     payload = {
         "name": display_sensor_name(str(meta["name"])),
         "unique_id": f"{group_device_id}_{key}",
+        "default_entity_id": default_entity_id("sensor", group, str(meta["name"])),
         "state_topic": state_topic_for_group(group),
         "value_template": f"{{{{ value_json.{key} }}}}",
         # Every entity points at the single last-will topic. paho supports exactly
@@ -489,6 +508,19 @@ _CONTROL_SELECT_TOPICS = {
 _CONTROL_NUMBER_TOPICS = {
     control_command_topic(setting): setting for setting in _CONTROL_NUMBERS
 }
+#: Programmes 46/47 (fakecloud.send_ac_charging_window): setting -> (label, icon,
+#: which hour). Selects of their own, not _CONTROL_SELECTS entries, because both
+#: hours go out in one command. Options are the read-back's own format, so the
+#: telemetry value_template renders an option label as is.
+_CONTROL_HOUR_SELECTS = {
+    "ac_charging_start_time": ("AC Charging Start Time", "mdi:clock-start", "start"),
+    "ac_charging_stop_time": ("AC Charging Stop Time", "mdi:clock-end", "stop"),
+}
+_HOUR_OPTIONS = [f"{hour:02d}:00" for hour in range(24)]
+#: command_topic -> setting name, same idea for the hour selects.
+_CONTROL_HOUR_TOPICS = {
+    control_command_topic(setting): setting for setting in _CONTROL_HOUR_SELECTS
+}
 
 
 def publish_control_discovery() -> None:
@@ -505,6 +537,7 @@ def publish_control_discovery() -> None:
         payload = {
             "name": display_sensor_name(label),
             "unique_id": f"{DEVICE_ID}_{setting}",
+            "default_entity_id": default_entity_id("switch", "main", label),
             "command_topic": control_command_topic(setting),
             "state_topic": (
                 state_topic_for_group(telemetry["group"]) if telemetry
@@ -530,6 +563,7 @@ def publish_control_discovery() -> None:
         payload = {
             "name": display_sensor_name(label),
             "unique_id": f"{DEVICE_ID}_{suffix}",
+            "default_entity_id": default_entity_id("button", "main", label),
             "command_topic": control_command_topic(suffix),
             "payload_press": "PRESS",
             "availability_topic": AVAILABILITY_TOPIC,
@@ -547,6 +581,7 @@ def publish_control_discovery() -> None:
         payload = {
             "name": display_sensor_name(label),
             "unique_id": f"{DEVICE_ID}_{setting}",
+            "default_entity_id": default_entity_id("select", "main", label),
             "command_topic": control_command_topic(setting),
             "state_topic": (
                 state_topic_for_group(telemetry["group"]) if telemetry
@@ -573,6 +608,7 @@ def publish_control_discovery() -> None:
         payload = {
             "name": display_sensor_name(label),
             "unique_id": f"{DEVICE_ID}_{setting}",
+            "default_entity_id": default_entity_id("number", "main", label),
             "command_topic": control_command_topic(setting),
             "state_topic": (
                 state_topic_for_group(telemetry["group"]) if telemetry
@@ -594,12 +630,33 @@ def publish_control_discovery() -> None:
             payload["value_template"] = telemetry["value_template"]
         client.publish(topic, json.dumps(payload), retain=True)
 
+    for setting, (label, icon, _) in _CONTROL_HOUR_SELECTS.items():
+        topic = f"{MQTT_DISCOVERY_PREFIX}/select/{DEVICE_ID}/{setting}/config"
+        payload = {
+            "name": display_sensor_name(label),
+            "unique_id": f"{DEVICE_ID}_{setting}",
+            "default_entity_id": default_entity_id("select", "main", label),
+            "command_topic": control_command_topic(setting),
+            # Read back from the sensor of the same key (dHrK token 11).
+            "state_topic": state_topic_for_group(get_sensor_group(setting)),
+            "value_template": f"{{{{ value_json.{setting} }}}}",
+            "options": _HOUR_OPTIONS,
+            "availability_topic": AVAILABILITY_TOPIC,
+            "payload_available": "online",
+            "payload_not_available": "offline",
+            "device": device_info("main"),
+            "icon": icon,
+            "entity_category": "config",
+        }
+        client.publish(topic, json.dumps(payload), retain=True)
+
 
 def subscribe_control_topics() -> None:
     """Re-subscribes every reconnect (on_connect calls this) -- a broker does not
     remember a clean-session client's subscriptions across a disconnect."""
     for topic in (list(_CONTROL_SWITCH_TOPICS) + list(_CONTROL_BUTTON_TOPICS)
-                  + list(_CONTROL_SELECT_TOPICS) + list(_CONTROL_NUMBER_TOPICS)):
+                  + list(_CONTROL_SELECT_TOPICS) + list(_CONTROL_NUMBER_TOPICS)
+                  + list(_CONTROL_HOUR_TOPICS)):
         client.subscribe(topic)
 
 
@@ -632,6 +689,17 @@ def _handle_control_message(topic: str, raw_payload: bytes) -> None:
 
     if _control_rate_limited(topic):
         log(f"[HA MQTT] control message on {topic!r} ignored: rate limit", level="warning")
+        return
+
+    hour_setting = _CONTROL_HOUR_TOPICS.get(topic)
+    if hour_setting is not None:
+        if payload not in _HOUR_OPTIONS:
+            log(f"[HA MQTT] control message on {topic!r} ignored: unexpected option {payload!r}", level="warning")
+            return
+        # Read back from telemetry only: a refused or failed write leaves the
+        # select on the real value.
+        which = _CONTROL_HOUR_SELECTS[hour_setting][2]
+        fakecloud.send_ac_charging_window(**{f"{which}_hour": int(payload[:2])})
         return
 
     fn_name = _CONTROL_BUTTON_TOPICS.get(topic)

@@ -895,6 +895,43 @@ def send_clock_sync() -> bool:
     return ok
 
 
+def _current_ac_charging_hour(key: str) -> Optional[int]:
+    """Last read-back of one AC charger hour ("12:00" -> 12), None when unknown."""
+    from . import state as _shared_state
+
+    value = _shared_state.snapshot_state().get(key)
+    if isinstance(value, str) and re.fullmatch(r"\d{2}:00", value) and int(value[:2]) <= 23:
+        return int(value[:2])
+    return None
+
+
+def send_ac_charging_window(start_hour: Optional[int] = None, stop_hour: Optional[int] = None) -> bool:
+    """Programmes 46/47, the AC charger's start and stop hour: ^S???ACCT<HHMM>,<HHMM>.
+
+    Not offered by the vendor app; found 2026-09-29 by probing the Voltronic PI17
+    family (the inverter already takes ^S???RS and ^S???DAT): ^P???ACCT answered
+    "^D0121200,1300" (the front panel's 12:00-13:00), ^S???ACCT1200,1400 answered
+    "^1" and read back 1200,1400 -- HA showed 14:00 -- then 1200,1300 restored it.
+    Both hours travel in one command, so the one not being changed is taken from
+    the last read-back (dHrK token 11); refused while that is unknown, rather than
+    guess it. Outside the window the grid does not charge the battery; 00-00 means
+    no restriction. Not to confuse with ACLT (AC supply load time), never sent."""
+    if start_hour is None:
+        start_hour = _current_ac_charging_hour("ac_charging_start_time")
+    if stop_hour is None:
+        stop_hour = _current_ac_charging_hour("ac_charging_stop_time")
+    if start_hour is None or stop_hour is None:
+        log("[CONTROL] AC charging window refused: the other hour has not been read back yet", level="warning")
+        return False
+    if not (0 <= start_hour <= 23 and 0 <= stop_hour <= 23):
+        log(f"[CONTROL] AC charging window refused: {start_hour}-{stop_hour} is not 0-23", level="warning")
+        return False
+    ok = _send_control_ci(build_write_ci("^S???ACCT", f"{start_hour:02d}00,{stop_hour:02d}00"))
+    if ok:
+        log(f"[CONTROL] AC charging window -> {start_hour:02d}:00-{stop_hour:02d}:00")
+    return ok
+
+
 def send_manual_refresh() -> bool:
     """On-demand telemetry poll -- the exact same i=501, empty-body dev_rpc
     request poll_due_connections sends on its own timer. Confirmed byte-for-byte

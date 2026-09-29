@@ -2,6 +2,70 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.79] - 2026-09-29
+
+### Added
+
+- **AC charger time window (Programmes 46/47) can be set from HA.** Two
+  selects, "AC Charging Start Time" and "AC Charging Stop Time" (00:00 to
+  23:00), in the device's Configuration section, read back from the sensors of
+  the same name. Command `^S???ACCT<HHMM>,<HHMM>` (Voltronic PI17 family, like
+  Programme 50's `^S???RS`), found with the 2.6.76 probe: `^P???ACCT` answered
+  `^D0121200,1300` (the front panel's 12:00-13:00), and `^S???ACCT1200,1400`
+  answered `^1`, read back 12:00-14:00 in HA, then 12:00-13:00 was restored.
+  Both hours go out together; the one not being changed is taken from the last
+  read-back, and the write is refused while that is unknown.
+
+### Removed
+
+- **The temporary raw command probe** (2.6.76) has done its job.
+
+## [2.6.78] - 2026-09-29
+
+### Fixed
+
+- **Entity IDs stay English with `LANGUAGE: fr`.** Home Assistant builds a new
+  entity's ID from its displayed names, so a sensor first created after
+  switching to French got a French ID (2.6.77's AC charging times became
+  `…_diagnostic_siseli_heure_de_debut_de_charge_secteur`). Every discovery
+  config now carries `default_entity_id`, built from the English device and
+  entity names — checked against a live registry: identical for all existing
+  entities. HA only reads it when it creates an entity, so existing IDs never
+  move.
+
+## [2.6.77] - 2026-09-29
+
+### Added
+
+- **AC charger time window (Programmes 46/47) read back.** Two sensors, "AC
+  Charging Start Time" and "AC Charging Stop Time" (e.g. 12:00 / 13:00), from
+  dHrK token 11, which packs both hours as "SSEE". Front panel confirmed:
+  Programme 46 = 12:00 moved it 0000 -> 1200, then Programme 47 = 13:00 ->
+  1213. 00:00 / 00:00 is the default and means no restriction. Outside the
+  window the grid no longer charges the battery (tested in SUB with the PV
+  disconnected: 0 A instead of the 2 A seen with 00-00). No control yet: the
+  vendor app has no such setting and the write command is unknown.
+
+### Fixed
+
+- **"Dual Output Starting/Ending Time" removed.** They were read from dHrK
+  tokens 11 and 12; token 11 is the AC charger window above, and token 12 did
+  not move with Programme 47, so its meaning is unknown. The never-decoded
+  "Mains Charging Ending Time" sensor is removed too (replaced by the two new
+  ones).
+
+## [2.6.76] - 2026-09-29
+
+### Added
+
+- **Temporary raw command probe.** A command published on
+  `<DEVICE_ID>/control/raw_command/set` (1-32 printable ASCII characters) is
+  sent to the inverter with its CRC16 and CR, and the answer is logged like any
+  command's. Meant to find the write command of Programmes 46/47 (AC charger
+  start/stop time), which the vendor app does not offer. Not shown as an HA
+  entity; PF (factory reset), PBT (battery type) and ^S???CLE (PV energy reset)
+  are refused. It will be removed once the command is found.
+
 ## [2.6.75] - 2026-09-28
 
 ### Changed

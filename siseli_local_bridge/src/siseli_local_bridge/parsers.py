@@ -2084,13 +2084,18 @@ class SolarParser:
             if eq_interval is not None:
                 state["equalization_interval"] = eq_interval
         if len(vals) >= 12:
-            out_start = SolarParser._format_hour_token(vals[11])
-            if out_start is not None:
-                state["output_starting_time"] = out_start
-        if len(vals) >= 13:
-            out_end = SolarParser._format_hour_token(vals[12])
-            if out_end is not None:
-                state["output_ending_time"] = out_end
+            # Token 11 = Programmes 46/47, the AC charger's start and stop hour,
+            # packed "SSEE". Front panel 2026-09-29: 46 set to 12:00 moved it
+            # 0000 -> 1200, then 47 set to 13:00 -> 1213. It used to be read as
+            # the dual output start time, and token 12 as its end time: token 12
+            # did not move with 47, so its meaning is unknown and it is not
+            # written. 00-00 is the default and means no restriction.
+            window = vals[11].strip()
+            if re.fullmatch(r"\d{4}", window):
+                start_h, stop_h = int(window[:2]), int(window[2:])
+                if start_h <= 23 and stop_h <= 23:
+                    state["ac_charging_start_time"] = f"{start_h:02d}:00"
+                    state["ac_charging_stop_time"] = f"{stop_h:02d}:00"
         if len(vals) >= 14:
             sec_delay = SolarParser._format_min_token(vals[13])
             if sec_delay is not None:
