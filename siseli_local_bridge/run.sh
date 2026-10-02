@@ -16,6 +16,7 @@ export HTTP_STUB_REAL_IPS="$(bashio::config 'HTTP_STUB_REAL_IPS' '8.212.16.60')"
 export DNS_SPOOF_DOMAIN="$(bashio::config 'DNS_SPOOF_DOMAIN' 'broker.mqtt.solar.siseli.com,dtu.access.solar.siseli.com')"
 export MQTT_BROKER_HOSTNAME="$(bashio::config 'MQTT_BROKER_HOSTNAME' 'hongkong.broker.mqtt.solar.siseli.com')"
 export TELEMETRY_POLL_INTERVAL_SEC="$(bashio::config 'TELEMETRY_POLL_INTERVAL_SEC' '0')"
+export LIVE_POLL_INTERVAL_SEC="$(bashio::config 'LIVE_POLL_INTERVAL_SEC' '10')"
 
 export INVERTER_IP="$(bashio::config 'INVERTER_IP')"
 export ROUTER_IP="$(bashio::config 'ROUTER_IP')"

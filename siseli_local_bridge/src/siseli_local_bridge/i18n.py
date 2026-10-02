@@ -21,6 +21,8 @@ FR_NAMES: Dict[str, str] = {
     "Device Type": "Type d'appareil",
     "Output Model": "Modèle de sortie",
     "Mode": "Mode",
+    "Active Warnings": "Alertes actives",
+    "Warning Flags": "Drapeaux d'alerte",
     "Status Code": "Code d'état",
     "Firmware Info": "Infos firmware",
     "Firmware Version": "Version du firmware",

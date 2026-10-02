@@ -1089,7 +1089,7 @@ class TestCachedFabricationsArePurged(unittest.TestCase):
                 json.dump(
                     {
                         "bat_v": 53.7,
-                        "mode": "Battery Mode",
+                        "output_model": "Battery Mode",
                         "overloaded": "No",
                         "bms_low_temperature_flag": "Yes",
                     },
@@ -1100,7 +1100,7 @@ class TestCachedFabricationsArePurged(unittest.TestCase):
                 core.load_cached_state(path)
 
             self.assertEqual(shared_state.LAST_STATE["bat_v"], 53.7, "real values survive")
-            for key in ("mode", "overloaded", "bms_low_temperature_flag"):
+            for key in ("output_model", "overloaded", "bms_low_temperature_flag"):
                 with self.subTest(key=key):
                     self.assertIn(key, UNDECODED_SENSOR_KEYS)
                     self.assertNotIn(key, shared_state.LAST_STATE)
@@ -1109,7 +1109,7 @@ class TestCachedFabricationsArePurged(unittest.TestCase):
         with isolated_state(), tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "state.json")
             with open(path, "w") as f:
-                json.dump({"mode": "Battery Mode"}, f)
+                json.dump({"output_model": "Battery Mode"}, f)
             shared_state.LAST_STATE.clear()
             lines = []
             with mock.patch("src.siseli_local_bridge.core.log", side_effect=lambda m, **k: lines.append(m)):

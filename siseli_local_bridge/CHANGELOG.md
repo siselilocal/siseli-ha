@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.80] - 2026-10-02
+
+### Added
+
+- **Live status every `LIVE_POLL_INTERVAL_SEC` (default 10 s) instead of once a minute.**
+  The dongle answers every regular `dev_rpc` poll, but the inverter data inside is a
+  cache it refreshes about once a minute (measured on 2026-10-02: PV power changed at
+  17:00:48, 17:01:46, 17:02:49, 17:03:49 while the poll ran every 15 s). Queries sent to
+  the dongle as commands are relayed to the inverter and answered fresh, so the bridge
+  now asks `QPIGS`, `QMOD` and `QPIWS` (one per second, in that order) each interval and
+  merges the answers into the state. `QPIGS` carries grid voltage and frequency, output
+  voltage, frequency, VA, W and load %, bus and battery voltage, battery current and
+  capacity (SOC %), PV voltage, current and power, which update `grid_v`, `grid_hz`,
+  `out_v`, `out_hz`, `apparent_va`, `load_w`, `load_pct`, `bus_voltage`, `bat_v`,
+  `bat_charge_current`, `dischg_current`, `bat_cap`, `pv_v`, `pv_current_a`, `pv_w`,
+  `generation_power_w`, and the calculated generation and load power and energy through
+  the same integrator as before. Answers whose CRC16 fails are ignored. Not derived from
+  it: battery power (the BMS current that feeds it is only in the slow blocks, and the
+  whole-ampere `QPIGS` current disagrees with it) and grid import (no signed mains power
+  in `QPIGS`). The BMS cells, remaining Ah and BMS current stay on the dongle's one-minute
+  cache: `QBMS`, `HEEP<n>` reads and fourteen PI18 `^P???` names were all refused (error
+  104) or unrelated.
+- **`LIVE_POLL_INTERVAL_SEC` option**, default 10, `0` switches it off. A value under 5
+  is raised to 5: the dongle answers a query with error 104 while another is pending.
+  The lowest value it tolerates is not measured yet.
+- **"Mode" sensor now has data** (`QMOD`: Battery, Line, Standby, Power On, Bypass,
+  Battery Test, Fault, Shutdown, ECO or Power Saving Mode); it left the undecoded list
+  and is enabled by default on a fresh install (an entity Home Assistant already created
+  disabled stays disabled until it is enabled by hand).
+- **Two diagnostic sensors from `QPIWS`:** "Active Warnings" (count of set bits) and
+  "Warning Flags" (the raw string, disabled by default). Which bit is which was never seen
+  set on this inverter (every answer was all zeros), so none is mapped to a named
+  warning; the first change is logged with the positions that are set.
+
 ## [2.6.79] - 2026-09-29
 
 ### Added

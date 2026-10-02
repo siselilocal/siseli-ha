@@ -49,6 +49,7 @@ BASE_ENV = {
     "DEBUG_FLAGS": "",
     "LOG_LEVEL": "info",
     "UPDATE_INTERVAL_SEC": "10",
+    "LIVE_POLL_INTERVAL_SEC": "10",
     "EXPIRE_AFTER_SEC": "1800",
     "RESET_ENERGY_COUNTERS": "false",
     "DISCOVERY_CLEANUP": "true",

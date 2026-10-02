@@ -956,6 +956,7 @@ def log_startup_configuration() -> None:
     log(f"[Config] SNIFF_IFACE={SNIFF_IFACE or 'auto'}")
     log(f"[Config] LOCAL_CLOUD_IP={LOCAL_CLOUD_IP or 'disabled'}:{LOCAL_CLOUD_PORT} (HTTP stub :{HTTP_STUB_PORT}) domains={list(DNS_SPOOF_DOMAINS)}")
     log(f"[Config] TELEMETRY_POLL_INTERVAL_SEC={TELEMETRY_POLL_INTERVAL_SEC or 'disabled'}")
+    log(f"[Config] LIVE_POLL_INTERVAL_SEC={LIVE_POLL_INTERVAL_SEC or 'disabled'}")
     # Printed because these are the options Supervisor pins on first save, so the
     # running value can differ from the shipped default and nothing else reveals it.
     log(

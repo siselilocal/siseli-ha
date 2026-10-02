@@ -1,6 +1,6 @@
 # ☀️ Siseli Local Bridge for Home Assistant
 
-[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.79-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
+[![Siseli Local Bridge](https://img.shields.io/badge/version-2.6.80-blue.svg?label=Siseli%20Local%20Bridge)](siseli_local_bridge/CHANGELOG.md)
 [![HA Add-on](https://img.shields.io/badge/Home%20Assistant-Add--on-green.svg)](https://www.home-assistant.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 
@@ -15,7 +15,7 @@ publishes it to Home Assistant through MQTT auto-discovery. It runs in one of tw
   Home Assistant host, readings refresh every 15 seconds, and the inverter's settings
   become Home Assistant controls. See [100% local mode](#100-local-mode).
 
-**204 sensors across 7 devices**, 146 enabled on a fresh install, plus the controls of
+**206 sensors across 7 devices**, 148 enabled on a fresh install, plus the controls of
 the 100% local mode. Entity names in English or French (`LANGUAGE` option).
 
 > **Acknowledgment:** a fork of [fadmaz/siseli-ha](https://github.com/fadmaz/siseli-ha)
@@ -66,7 +66,7 @@ vendor app keeps working. You lose the Home Assistant sensors, nothing else.
 
 ## Known limitations
 
-**39 of the 204 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
+**38 of the 206 sensors read `Unknown` and cannot be decoded.** Earlier versions filled them
 with hardcoded constants — fault flags that could never report a fault, a `Mode` that was
 a fixed string in the source. Those were removed in 2.6.1. The entities remain, disabled
 by default, and publish an explicit "no value" rather than a comforting lie. If your

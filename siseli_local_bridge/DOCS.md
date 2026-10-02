@@ -125,6 +125,7 @@ in step 3 above.
 | `UPDATE_INTERVAL_SEC` | `10` | Publish throttle. Raising it saves database storage |
 | `EXPIRE_AFTER_SEC` | `1800` | How long a value stays valid before Home Assistant marks it unavailable. `0` disables |
 | `TELEMETRY_TIMEOUT_SEC` | `1800` | How long without a decoded reading before the bridge marks sensors unavailable |
+| `LIVE_POLL_INTERVAL_SEC` | `10` | How often the live status (PV, grid, output, battery voltage and SOC, mode, warnings) is read straight from the inverter. The regular poll only returns a cache the dongle refreshes about once a minute. `0` disables it, values under `5` are raised to `5`. Needs `LOCAL_CLOUD_IP` |
 
 These three interact, and the add-on **refuses to start** if they contradict each other:
 

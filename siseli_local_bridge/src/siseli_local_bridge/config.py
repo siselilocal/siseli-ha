@@ -60,6 +60,14 @@ MQTT_BROKER_HOSTNAME = os.getenv("MQTT_BROKER_HOSTNAME", "hongkong.broker.mqtt.s
 # 0 disables polling (the original passive behaviour).
 TELEMETRY_POLL_INTERVAL_SEC = int(os.getenv("TELEMETRY_POLL_INTERVAL_SEC", "0"))
 
+# The dongle answers the poll above every time, but the inverter data inside is a cache
+# it refreshes about once a minute. Live status queries (PI30 QPIGS, QMOD, QPIWS) are
+# relayed to the inverter itself and answered fresh, so they are sent this often and
+# merged into the state. 0 disables them; a value below LIVE_POLL_MIN_INTERVAL_SEC is
+# raised to it (fakecloud.py), because the dongle refuses queries that arrive too close.
+# Only used when LOCAL_CLOUD_IP is set.
+LIVE_POLL_INTERVAL_SEC = int(os.getenv("LIVE_POLL_INTERVAL_SEC", "10"))
+
 # Comma-separated, each suffix-matched rather than an exact hostname: the vendor's
 # own broker name observed in a real capture was "hongkong.broker.mqtt.solar.
 # siseli.com" (2026-09-11), a region-prefixed subdomain, so matching only that
@@ -300,6 +308,8 @@ def validate_config() -> None:
             errors.append(f"DNS_SPOOF_DOMAIN contains a suffix with a space: {DNS_SPOOF_DOMAINS!r}")
         if TELEMETRY_POLL_INTERVAL_SEC < 0:
             errors.append(f"TELEMETRY_POLL_INTERVAL_SEC must be >= 0, got {TELEMETRY_POLL_INTERVAL_SEC}")
+        if LIVE_POLL_INTERVAL_SEC < 0:
+            errors.append(f"LIVE_POLL_INTERVAL_SEC must be >= 0, got {LIVE_POLL_INTERVAL_SEC}")
 
     for name, val in [
         ("TARGET_PORT", TARGET_PORT),

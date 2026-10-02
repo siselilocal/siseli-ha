@@ -132,7 +132,7 @@ class TestUndecodableSensors(unittest.TestCase):
 
     def test_the_list_covers_the_fault_indicators_and_bms_flags(self):
         for key in (
-            "mode", "overloaded", "machine_over_temperature", "low_battery_alarm",
+            "output_model", "overloaded", "machine_over_temperature", "low_battery_alarm",
             "bms_temperature_too_high_flag", "bms_low_temperature_flag",
             "battery_not_connected", "util_chg",
         ):

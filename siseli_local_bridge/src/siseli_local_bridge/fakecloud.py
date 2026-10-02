@@ -41,6 +41,7 @@ from typing import Optional
 
 from . import tcpstack
 from .config import (
+    LIVE_POLL_INTERVAL_SEC,
     LOG_MQTT_PAYLOAD_PREVIEW,
     LOG_MQTT_TOPICS,
     LOG_PACKETS,
@@ -301,6 +302,125 @@ def _apply_qflag(text: str, conn: tcpstack.Connection) -> None:
         _parsers.PENDING_PUBLISH = True
 
 
+def _pi30_verified_payload(raw: bytes) -> Optional[str]:
+    """A PI30 reply's text between "(" and its CRC16-XMODEM, None when the CRC does
+    not match. Exactly one trailing CR is removed -- a CRC byte is often 0x0D/0x0A --
+    and a CRC byte that would collide with "(", CR, LF or NUL is accepted either as
+    computed or incremented by one (the same rule as pi30.verify_frame)."""
+    frame = raw[:-1] if raw.endswith(b"\r") else raw
+    if len(frame) < 4 or not frame.startswith(b"("):
+        return None
+    body, crc = frame[:-2], frame[-2:]
+    want = binascii.crc_hqx(body, 0).to_bytes(2, "big")
+    bumped = bytes((v + 1) if v in _PI30_BUMPABLE else v for v in want)
+    if crc != want and crc != bumped:
+        return None
+    return body[1:].decode("ascii", errors="replace")
+
+
+def _apply_qpigs(raw: bytes, conn: tcpstack.Connection) -> None:
+    """Merge a QPIGS answer (live status, asked every _QPIGS_INTERVAL_SEC) into the
+    state, so PV, grid, output and battery voltage are as fresh as the inverter
+    itself instead of the dongle's once-a-minute cache.
+
+    Same keys, same units as the telemetry blocks (2l0E, WdRR, 2ONL, Mpod), so the
+    entities do not change. Generation and load power get their calculated twins
+    and energy counters through the very integrator the blocks use. Not derived
+    here: battery power (the BMS current that feeds it is only in the slow blocks;
+    the QPIGS one is a whole-ampere legacy figure that disagrees with it) and grid
+    import (the signed mains power is not in QPIGS). Every field is dropped when
+    its token does not parse, never defaulted, and a reply whose CRC fails is not
+    used at all."""
+    from . import parsers as _parsers
+    from . import state as _shared_state
+
+    payload = _pi30_verified_payload(raw)
+    tokens = payload.split(" ") if payload is not None else []
+    if len(tokens) < _QPIGS_MIN_TOKENS:
+        if not getattr(conn, "qpigs_bad_logged", False):
+            conn.qpigs_bad_logged = True
+            log("[CONTROL] a QPIGS answer failed its CRC or was too short; ignored", level="warning")
+        return
+    conn.qpigs_bad_logged = False
+
+    as_float = SolarParser._to_float
+    as_int = SolarParser._to_int
+    values = {
+        "grid_v": as_float(tokens[0]),
+        "grid_hz": as_float(tokens[1]),
+        "out_v": as_float(tokens[2]),
+        "out_hz": as_float(tokens[3]),
+        "apparent_va": as_int(tokens[4]),
+        "load_w": as_int(tokens[5]),
+        "load_pct": as_int(tokens[6]),
+        "bus_voltage": as_float(tokens[7]),
+        "bat_v": as_float(tokens[8]),
+        "bat_charge_current": as_float(tokens[9]),
+        "bat_cap": as_int(tokens[10]),
+        "pv_current_a": as_float(tokens[12]),
+        "pv_v": as_float(tokens[13]),
+        "dischg_current": as_float(tokens[15]),
+        "pv_w": as_int(tokens[19]),
+    }
+    ranges = {"load_pct": (0, 200), "bat_v": (0, 100), "bat_cap": (0, 100)}
+    state = {}
+    for key, value in values.items():
+        low, high = ranges.get(key, (None, None))
+        if value is None or (low is not None and not low <= value <= high):
+            continue
+        state[key] = round(value, 2) if isinstance(value, float) else value
+
+    derived = {}
+    if "load_w" in state:
+        derived["c_load_w"] = SolarParser._scale_main_power(state["load_w"])
+    if "pv_w" in state:
+        pv_total_w = state["pv_w"]
+        pv2_w = _shared_state.LAST_STATE.get("pv2_power_w")
+        if isinstance(pv2_w, (int, float)):
+            pv_total_w += int(round(float(pv2_w)))
+        state["generation_power_w"] = pv_total_w
+        derived["c_generation_power_w"] = SolarParser._scale_main_power(pv_total_w)
+    # Only the two power keys go in, so the integrator touches the generation and
+    # load domains and leaves battery and grid (no key of theirs present) alone.
+    SolarParser._apply_energy_dashboard_calculations(derived)
+    state.update(derived)
+
+    if not state:
+        return
+    _shared_state.update_state(state)
+    _parsers.PENDING_PUBLISH = True
+
+
+def _publish_live(values: dict) -> None:
+    """Merge live values into the state and let the publish tick flush them."""
+    from . import parsers as _parsers
+    from . import state as _shared_state
+
+    if not values:
+        return
+    _shared_state.update_state(values)
+    _parsers.PENDING_PUBLISH = True
+
+
+def _apply_qmod(letter: str) -> None:
+    """QMOD answers one letter, the inverter's working mode."""
+    mode = _QMOD_MODES.get(letter)
+    if mode is not None:
+        _publish_live({"mode": mode})
+
+
+def _apply_qpiws(flags: str, conn: tcpstack.Connection) -> None:
+    """QPIWS answers one 0/1 character per warning or fault. Only the count and the
+    raw string are published: which bit is which was never seen set on this inverter
+    (every answer so far was all zeros), so none is mapped to a named sensor. A change
+    is logged once, with the positions that are set, so a first real alert is on record."""
+    active = [index + 1 for index, bit in enumerate(flags) if bit == "1"]
+    if flags != getattr(conn, "last_qpiws", flags):
+        log(f"[CONTROL] inverter warnings (QPIWS): {flags} -> bits set at positions {active}", level="warning")
+    conn.last_qpiws = flags
+    _publish_live({"warning_count": len(active), "warning_flags": flags})
+
+
 def _log_command_reply(payload: bytes, conn: tcpstack.Connection) -> None:
     """Log the inverter's answer to a dev_rpc command ("(ACK9", "(NAKss", "^1",
     "^0", or a query's data). Telemetry replies carry a "ct" block list and are
@@ -322,6 +442,16 @@ def _log_command_reply(payload: bytes, conn: tcpstack.Connection) -> None:
         # Recognised by its shape, not by last_command: a switch pressed in the
         # same second as the minute's QFLAG would otherwise swap the labels.
         _apply_qflag(text, conn)
+        return
+    if _QPIGS_RE.match(text):
+        _apply_qpigs(raw, conn)
+        return
+    live = _pi30_verified_payload(raw)
+    if live is not None and live in _QMOD_MODES:
+        _apply_qmod(live)
+        return
+    if live is not None and _QPIWS_RE.match(live):
+        _apply_qpiws(live, conn)
         return
     log(f"[CONTROL] inverter answered {command}: {text}", level="warning")
 
@@ -456,6 +586,32 @@ _QFLAG_KEYS = {
     "z": "fault_code_record",
 }
 _QFLAG_INTERVAL_SEC = 60
+#: The dongle answers every 15 s dev_rpc poll, but the inverter data inside only
+#: changes about once a minute (it serves a cache). PI30 queries asked directly are
+#: relayed to the inverter and answered fresh (verified 2026-10-02: every QPIGS answer
+#: differed, 10 s apart; QMOD and QPIWS answered the same way). Every
+#: LIVE_POLL_INTERVAL_SEC they are sent one per second, in this order, and merged by
+#: _apply_qpigs / _apply_qmod / _apply_qpiws. The dongle answers a query with error
+#: 104 when another is still pending, hence one per tick and a floor on the interval.
+LIVE_POLL_MIN_INTERVAL_SEC = 5
+_LIVE_QUERIES = ("QPIGS", "QMOD", "QPIWS")
+#: PI30 QMOD letter -> the "mode" sensor's text (same wording as the sensor's old tests).
+_QMOD_MODES = {
+    "P": "Power On Mode",
+    "S": "Standby Mode",
+    "Y": "Bypass Mode",
+    "L": "Line Mode",
+    "B": "Battery Mode",
+    "T": "Battery Test Mode",
+    "F": "Fault Mode",
+    "D": "Shutdown Mode",
+    "E": "ECO Mode",
+    "H": "Power Saving Mode",
+}
+_QPIWS_RE = re.compile(r"^[01]{20,40}$")
+_QPIGS_RE = re.compile(r"^\(\d{3}\.\d \d{2}\.\d \d{3}\.\d \d{2}\.\d ")
+_QPIGS_MIN_TOKENS = 20
+_PI30_BUMPABLE = (0x28, 0x0D, 0x0A, 0x00)
 _QFLAG_RE = re.compile(r"^\(E([a-z]*)D([a-z]*)")
 
 
@@ -953,6 +1109,13 @@ def send_manual_refresh() -> bool:
         return False
 
 
+def _live_interval() -> int:
+    """LIVE_POLL_INTERVAL_SEC with its floor applied; 0 when switched off."""
+    if LIVE_POLL_INTERVAL_SEC <= 0:
+        return 0
+    return max(LIVE_POLL_INTERVAL_SEC, LIVE_POLL_MIN_INTERVAL_SEC)
+
+
 def poll_due_connections() -> None:
     """Called periodically from core.py's health_logger tick. Sends a dev_rpc
     request to every established local-cloud connection whose interval has
@@ -966,6 +1129,21 @@ def poll_due_connections() -> None:
         next_poll_ts = getattr(conn, "next_poll_ts", None)
         if dtu_id is None or next_poll_ts is None or conn.closed:
             continue
+        live_interval = _live_interval()
+        if live_interval > 0:
+            queue = getattr(conn, "live_queue", None)
+            if queue is None:
+                queue = conn.live_queue = []
+            if not queue and now >= getattr(conn, "next_live_ts", 0.0):
+                conn.next_live_ts = now + live_interval
+                queue.extend(_LIVE_QUERIES)
+            if queue and now >= getattr(conn, "live_send_ts", 0.0):
+                command = queue.pop(0)
+                conn.live_send_ts = now + 1.0
+                try:
+                    _send_control_ci(build_write_ci(command, ""), conn=conn)
+                except Exception as exc:
+                    log(f"[LOCAL CLOUD ERROR] {command} query failed: {exc}", level="error")
         if now < next_poll_ts:
             continue
         conn.next_poll_ts = now + TELEMETRY_POLL_INTERVAL_SEC
