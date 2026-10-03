@@ -938,25 +938,58 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         envelope = json.loads(payload[payload.index(b"{"):])
         return {b["cn"]: base64.b64decode(b["co"]) for b in envelope["b"]["ct"]}
 
-    def test_a_complete_cycle_is_decoded_in_one_payload_like_a_dongle_reply(self):
+    def test_the_battery_and_power_groups_are_decoded_as_soon_as_each_is_complete(self):
         from unittest import mock
         from src.siseli_local_bridge import fakecloud
-        commands = ["HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV"]
-        conn = self._h_conn(fakecloud._H_BLOCKS[c] for c in commands)
+        cycle = ["HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV", "HSTS"]
+        conn = self._h_conn(fakecloud._H_BLOCKS[c] for c in cycle)
         with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse, \
                 mock.patch.object(fakecloud, "log") as log:
-            for command in commands[:-1]:
+            for command in cycle[:2]:
                 self._feed(conn, command)
-            parse.assert_not_called()  # HBAT and HBMS1 must not be decoded apart
-            self._feed(conn, commands[-1])
-        parse.assert_called_once()
-        blocks = self._blocks_of(parse.call_args)
-        self.assertEqual(set(blocks), {"2ONL", "Yavb", "uxJp", "WdRR", "2l0E", "Mpod"})
-        self.assertEqual(blocks["Yavb"], self._h_raw("HBMS1"))
-        self.assertEqual(parse.call_args[1]["source_topic"], "dtu/1/pub/service/dev_rpc_reply")
+            parse.assert_not_called()  # HBAT and HBMS1 still wait for HBMS2: never decoded apart
+            self._feed(conn, "HBMS2")
+            self.assertEqual(parse.call_count, 1)
+            self.assertEqual(set(self._blocks_of(parse.call_args)), {"2ONL", "Yavb", "uxJp"})
+            for command in cycle[3:5]:
+                self._feed(conn, command)
+            self.assertEqual(parse.call_count, 1)
+            self._feed(conn, "HPV")
+            self.assertEqual(parse.call_count, 2)
+            self.assertEqual(set(self._blocks_of(parse.call_args)), {"WdRR", "2l0E", "Mpod"})
+            self._feed(conn, "HSTS")  # the rotating slow block goes alone, with nothing re-sent
+            self.assertEqual(parse.call_count, 3)
+            self.assertEqual(set(self._blocks_of(parse.call_args)), {"eo8w"})
         log.assert_not_called()
         self.assertEqual(conn.h_pending, {})
 
+    def test_a_group_the_cycle_does_not_fully_expect_waits_for_the_cycle_end(self):
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        conn = self._h_conn(["2ONL", "Yavb", "WdRR"])  # no uxJp, so the battery group is not whole
+        with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse:
+            self._feed(conn, "HBAT")
+            self._feed(conn, "HBMS1")
+            parse.assert_not_called()
+            self._feed(conn, "HGRID")
+        parse.assert_called_once()
+        self.assertEqual(set(self._blocks_of(parse.call_args)), {"2ONL", "Yavb", "WdRR"})
+
+    def test_a_throttled_publish_is_flushed_every_second_not_every_ten(self):
+        from unittest import mock
+        from src.siseli_local_bridge import core, fakecloud, state as shared_state, tcpstack
+
+        def stop(_seconds):
+            shared_state.RUNNING = False
+
+        with mock.patch.object(shared_state, "RUNNING", True), \
+                mock.patch.object(core.time, "sleep", side_effect=stop), \
+                mock.patch.object(tcpstack, "retransmit_tick"), \
+                mock.patch.object(fakecloud, "poll_due_connections") as poll, \
+                mock.patch.object(core, "publish_tick") as tick:
+            core.telemetry_poll_loop()
+        poll.assert_called_once()
+        tick.assert_called_once()
     def test_a_lost_reply_is_made_up_for_when_the_next_cycle_starts(self):
         from unittest import mock
         from src.siseli_local_bridge import fakecloud

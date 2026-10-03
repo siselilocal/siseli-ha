@@ -863,6 +863,11 @@ def telemetry_poll_loop() -> None:
             fakecloud.poll_due_connections()
         except Exception as exc:
             log(f"[LOCAL CLOUD ERROR] {exc}", level="error")
+        # A live block decoded inside the previous publish's UPDATE_INTERVAL_SEC window
+        # is held back by the throttle; flushing it from health_logger's 10 s tick made
+        # it wait up to 10 s more. Checked here every second instead (publish_tick is
+        # cheap and takes PUBLISH_LOCK like the health thread's own call).
+        publish_tick()
 
 
 def restore_arp() -> None:

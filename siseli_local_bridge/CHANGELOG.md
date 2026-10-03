@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.82] - 2026-10-03
+
+### Changed
+
+- **Live values are published sooner.** Measured on 2026-10-03 with the dongle's answers
+  read off the wire next to what the bridge published: a value reached Home Assistant about
+  4 s after the dongle answered, and 6 to 9 s after on roughly a cycle in three.
+  - The cycle's blocks are decoded in two groups as soon as each is complete: the battery
+    trio (`HBAT`, `HBMS1`, `HBMS2`, about 3 s into a cycle, still decoded together so the
+    battery power stays on one current basis) and the power trio (`HGRID`, `HOP`, `HPV`,
+    about 6 s). What is left (the rotating slow block) is decoded when the cycle is complete.
+    A group the cycle does not fully expect still waits for the cycle's end.
+  - A live block decoded inside the previous publish's `UPDATE_INTERVAL_SEC` window is held
+    back by the publish throttle, and the only thing that flushed it was `health_logger`'s
+    10 s tick, hence the 6 to 9 s. `telemetry_poll_loop` now runs the same check every second.
+- With `UPDATE_INTERVAL_SEC` at 2 (and `LIVE_POLL_INTERVAL_SEC` at 8), every one of 12
+  consecutive `HGRID` answers reached Home Assistant; with 5 one was overwritten before it
+  was published.
 ## [2.6.81] - 2026-10-03
 
 ### Changed

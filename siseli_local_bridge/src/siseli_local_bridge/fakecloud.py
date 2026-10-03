@@ -337,19 +337,24 @@ def _h_block_of(raw: bytes) -> Optional[str]:
 
 
 def _collect_live_block(block: str, raw: bytes, conn: tcpstack.Connection) -> None:
-    """Hold one live block until the cycle's others are in, then decode them together.
+    """Hold one live block until the others it must be decoded with are in.
 
-    Together because the decoder derives battery power from the currents of the payload
-    in hand: HBAT (inverter current) and HBMS1 (BMS current) in two payloads would make
-    the figure jump between two bases. When a reply went missing the leftovers are
-    decoded as soon as the next cycle's first answer shows the cycle has moved on."""
+    Decoded together because the decoder derives battery power from the currents of the
+    payload in hand: HBAT (inverter current) and HBMS1 (BMS current) in two payloads
+    would make the figure jump between two bases. Hence the groups of _LIVE_GROUPS: each
+    is decoded as soon as it is complete, which is seconds before the cycle ends, and
+    what is left goes when the cycle is complete. When a reply went missing the
+    leftovers are decoded as soon as the next cycle's first answer shows the cycle has
+    moved on."""
     pending = getattr(conn, "h_pending", None)
     if pending is None:
         pending = conn.h_pending = {}
     cycle = getattr(conn, "live_cycle", 0)
-    if pending and getattr(conn, "h_pending_cycle", cycle) != cycle:
-        _flush_live_blocks(conn)
-        pending = conn.h_pending
+    if getattr(conn, "h_pending_cycle", cycle) != cycle:
+        if pending:
+            _flush_live_blocks(conn)
+            pending = conn.h_pending
+        conn.h_done = set()
     conn.h_pending_cycle = cycle
     pending[block] = raw
     stamps = getattr(conn, "h_block_ts", None)
@@ -357,17 +362,29 @@ def _collect_live_block(block: str, raw: bytes, conn: tcpstack.Connection) -> No
         stamps = conn.h_block_ts = {}
     stamps[block] = time.monotonic()
     expected = getattr(conn, "h_expected", frozenset())
-    if expected and expected.issubset(pending):
+    done = getattr(conn, "h_done", set())
+    if expected and expected.issubset(set(pending) | done):
         _flush_live_blocks(conn)
+        return
+    for group in _LIVE_GROUPS:
+        if group <= expected and group.issubset(pending):
+            _flush_live_blocks(conn, only=group)
 
 
-def _flush_live_blocks(conn: tcpstack.Connection) -> None:
-    """Decode the held blocks exactly as if the dongle had sent them in one telemetry
-    reply: same envelope, same parse_payload, so the entities, the derived power and
-    energy, the publish throttle and the freshness watchdog all behave as before."""
-    pending, conn.h_pending = getattr(conn, "h_pending", {}), {}
+def _flush_live_blocks(conn: tcpstack.Connection, only=None) -> None:
+    """Decode held blocks (all of them, or just `only`) exactly as if the dongle had
+    sent them in one telemetry reply: same envelope, same parse_payload, so the
+    entities, the derived power and energy, the publish throttle and the freshness
+    watchdog all behave as before."""
+    held = getattr(conn, "h_pending", {})
+    if only is None:
+        pending, conn.h_pending = held, {}
+    else:
+        pending = {name: held.pop(name) for name in list(held) if name in only}
+        conn.h_pending = held
     if not pending:
         return
+    conn.h_done = set(getattr(conn, "h_done", set())) | set(pending)
     envelope = {
         "c": 5, "t": "live", "s": "live", "i": 502, "e": 0,
         "b": {"sa": "", "ct": [{"cn": name, "co": base64.b64encode(raw).decode()} for name, raw in pending.items()]},
@@ -628,6 +645,11 @@ _H_BLOCKS = {
 #: whichever currents the payload carries (BMS first, then the inverter's own), so they
 #: must not arrive in separate payloads. QMOD fills the Mode sensor.
 _LIVE_FAST = ("HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV", "QMOD")
+#: Blocks decoded as soon as the whole group has been read, instead of waiting for the
+#: cycle's last command: the battery trio (about 3 s into a cycle) and the power trio
+#: (about 6 s). A group is only used when the cycle expects all of it; the grid, output
+#: and PV derived values do not depend on each other or on the battery's.
+_LIVE_GROUPS = (frozenset({"2ONL", "Yavb", "uxJp"}), frozenset({"WdRR", "2l0E", "Mpod"}))
 _LIVE_SLOW = ("HSTS", "HBMS3", "HTEMP", "HGEN", "HPVB", "QPIWS")
 #: A cached copy of a block is dropped (see _without_live_blocks) while its live read
 #: is younger than this, so the dongle's up-to-a-minute-old copy never overwrites it.
