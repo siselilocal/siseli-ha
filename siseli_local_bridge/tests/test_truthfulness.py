@@ -829,83 +829,6 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         self.assertTrue(pending)
         conn.reply.assert_not_called()  # replies never trigger a send
 
-    # A real QPIGS answer (2026-10-02 13:10:02Z), CRC recomputed.
-    _QPIGS_TEXT = (b"(241.1 49.9 239.9 49.9 0240 0140 002 405 53.30 000 097 0053 "
-                   b"01.0 191.0 00.00 00000 00010110 00 00 00209 110")
-
-    def _qpigs_frame(self, text=None, corrupt=False):
-        import binascii
-        text = text or self._QPIGS_TEXT
-        crc = bytearray(binascii.crc_hqx(text, 0).to_bytes(2, "big"))
-        if corrupt:
-            crc[0] ^= 0xFF
-        return text + bytes(crc) + b"\r"
-
-    def test_qpigs_answer_updates_live_values_and_the_generation_and_load_totals(self):
-        from types import SimpleNamespace
-        from unittest import mock
-        from src.siseli_local_bridge import fakecloud, parsers
-        from src.siseli_local_bridge import state as shared_state
-        conn = SimpleNamespace()
-        with mock.patch.dict(shared_state.LAST_STATE, {"pv2_power_w": 0}, clear=True), \
-                mock.patch.dict(parsers.LAST_ENERGY_TS, {"generation": 100.0, "load": 100.0}, clear=False), \
-                mock.patch.object(fakecloud.SolarParser, "_energy_dt_seconds", return_value=10.0), \
-                mock.patch.object(parsers, "PENDING_PUBLISH", False):
-            fakecloud._apply_qpigs(self._qpigs_frame(), conn)
-            snapshot = shared_state.snapshot_state()
-            pending = parsers.PENDING_PUBLISH
-        self.assertEqual(snapshot["pv_w"], 209)
-        self.assertEqual(snapshot["generation_power_w"], 209)
-        self.assertEqual(snapshot["c_generation_power_w"], 209)
-        self.assertEqual(snapshot["pv_v"], 191.0)
-        self.assertEqual(snapshot["pv_current_a"], 1.0)
-        self.assertEqual(snapshot["load_w"], 140)
-        self.assertEqual(snapshot["c_load_w"], 140)
-        self.assertEqual(snapshot["apparent_va"], 240)
-        self.assertEqual(snapshot["load_pct"], 2)
-        self.assertEqual(snapshot["grid_v"], 241.1)
-        self.assertEqual(snapshot["out_v"], 239.9)
-        self.assertEqual(snapshot["bat_v"], 53.3)
-        self.assertEqual(snapshot["bat_cap"], 97)
-        self.assertEqual(snapshot["bus_voltage"], 405.0)
-        self.assertGreater(snapshot["c_generation_energy_kwh"], 0)  # 209 W for 10 s
-        self.assertGreater(snapshot["c_load_energy_kwh"], 0)
-        # Battery power and grid import are never derived from QPIGS.
-        self.assertNotIn("c_battery_charge_power_w", snapshot)
-        self.assertNotIn("c_grid_import_power_w", snapshot)
-        self.assertTrue(pending)
-
-    def test_qpigs_answer_with_a_bad_crc_is_ignored(self):
-        from types import SimpleNamespace
-        from unittest import mock
-        from src.siseli_local_bridge import fakecloud, parsers
-        from src.siseli_local_bridge import state as shared_state
-        conn = SimpleNamespace()
-        with mock.patch.dict(shared_state.LAST_STATE, {}, clear=True), \
-                mock.patch.object(fakecloud, "log") as log, \
-                mock.patch.object(parsers, "PENDING_PUBLISH", False):
-            fakecloud._apply_qpigs(self._qpigs_frame(corrupt=True), conn)
-            snapshot = shared_state.snapshot_state()
-            pending = parsers.PENDING_PUBLISH
-        self.assertNotIn("pv_w", snapshot)
-        self.assertFalse(pending)
-        self.assertEqual(log.call_count, 1)
-
-    def test_qpigs_answer_is_not_logged_as_a_command_answer(self):
-        import base64
-        import json
-        from types import SimpleNamespace
-        from unittest import mock
-        from src.siseli_local_bridge import fakecloud
-        conn = SimpleNamespace(last_command="QPIGS")
-        envelope = b"\x00" + json.dumps({"c": 5, "i": 503, "b": {"sa": "", "co": base64.b64encode(self._qpigs_frame()).decode()}}).encode()
-        with mock.patch.object(fakecloud, "log") as log, \
-                mock.patch.object(fakecloud, "_apply_qpigs") as apply:
-            fakecloud._log_command_reply(envelope, conn)
-        apply.assert_called_once()
-        self.assertEqual(self._qpigs_frame(), apply.call_args[0][0])
-        log.assert_not_called()
-
     def _reply_envelope(self, raw):
         import base64
         import json
@@ -965,7 +888,128 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             with mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", configured):
                 self.assertEqual(fakecloud._live_interval(), expected, configured)
 
-    def test_live_queries_go_out_one_per_second_then_wait_for_the_interval(self):
+    # The eleven real answers of the H read commands (2026-10-03), no CRC.
+    _H_ANSWERS = {
+        "HBMS1": "(04 1001100000000000 042.0 056.0 100.0 041 0004.9 0000.0 02991 000000",
+        "HBMS2": "(0041.0 0100.0 2 0000 0000 0000 0000 0000000000000000000000",
+        "HBMS3": "(3227 3227 3228 3232 3227 3230 3233 3232 3231 3223 3227 3233 3230 3233 3229 3218 00000000",
+        "HGRID": "(240.1 49.9 280 170 65 40 +00000 0 12000 11+00000",
+        "HOP": "(242.5 49.8 00679 00235 006 037 11000 006.1 00126",
+        "HBAT": "(04 052.4 041 002 00000 377 110007200000 00000000",
+        "HPV": "(195.4 03.7 00728 00000.0 00000 2 195.2 027 15000",
+        "HTEMP": "(040 044 029 054 054 030 030 11 038 045 000000000",
+        "HGEN": "(261003 09:03 01.263 0028.4 0107.7 000000107.7 000000000000",
+        "HSTS": "(00 B010000000000 10211002120B117200000",
+        "HPVB": "(000.0 00.0 00000 0 380.0 00000000000000000000000",
+    }
+
+    def _h_raw(self, command):
+        return self._H_ANSWERS[command].encode("ascii") + b"\r"
+
+    def test_every_h_answer_is_identified_as_its_own_block(self):
+        from src.siseli_local_bridge import fakecloud
+        for command, text in self._H_ANSWERS.items():
+            with self.subTest(command=command):
+                self.assertEqual(fakecloud._h_block_of(self._h_raw(command)), fakecloud._H_BLOCKS[command])
+        self.assertEqual(len(set(fakecloud._H_BLOCKS.values())), len(fakecloud._H_BLOCKS))
+
+    def test_a_line_that_is_not_one_of_the_blocks_is_never_decoded(self):
+        from src.siseli_local_bridge import fakecloud
+        for raw in (
+            b"(ACK9\r", b"(NAKss\r", b"(EbuvxyDajkz\x8b\x12\r", b"hello\r", b"\xff\xfe\r", b"(\r",
+            self._h_raw("HGRID").replace(b" +00000", b""),          # a token short
+            self._h_raw("HOP").replace(b"006.1", b"0061"),          # telltale token wrong
+        ):
+            with self.subTest(raw=raw):
+                self.assertIsNone(fakecloud._h_block_of(raw))
+
+    def _h_conn(self, expected, cycle=1):
+        from types import SimpleNamespace
+        return SimpleNamespace(dtu_id="1", live_cycle=cycle, h_expected=frozenset(expected))
+
+    def _feed(self, conn, command):
+        from src.siseli_local_bridge import fakecloud
+        fakecloud._log_command_reply(self._reply_envelope(self._h_raw(command)), conn)
+
+    def _blocks_of(self, parse_call):
+        import base64
+        import json
+        payload = parse_call[0][0]
+        envelope = json.loads(payload[payload.index(b"{"):])
+        return {b["cn"]: base64.b64decode(b["co"]) for b in envelope["b"]["ct"]}
+
+    def test_a_complete_cycle_is_decoded_in_one_payload_like_a_dongle_reply(self):
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        commands = ["HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV"]
+        conn = self._h_conn(fakecloud._H_BLOCKS[c] for c in commands)
+        with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse, \
+                mock.patch.object(fakecloud, "log") as log:
+            for command in commands[:-1]:
+                self._feed(conn, command)
+            parse.assert_not_called()  # HBAT and HBMS1 must not be decoded apart
+            self._feed(conn, commands[-1])
+        parse.assert_called_once()
+        blocks = self._blocks_of(parse.call_args)
+        self.assertEqual(set(blocks), {"2ONL", "Yavb", "uxJp", "WdRR", "2l0E", "Mpod"})
+        self.assertEqual(blocks["Yavb"], self._h_raw("HBMS1"))
+        self.assertEqual(parse.call_args[1]["source_topic"], "dtu/1/pub/service/dev_rpc_reply")
+        log.assert_not_called()
+        self.assertEqual(conn.h_pending, {})
+
+    def test_a_lost_reply_is_made_up_for_when_the_next_cycle_starts(self):
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        conn = self._h_conn(["2ONL", "Yavb", "WdRR"], cycle=1)
+        with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse:
+            self._feed(conn, "HBAT")
+            self._feed(conn, "HBMS1")  # HGRID never answers
+            parse.assert_not_called()
+            conn.live_cycle = 2
+            self._feed(conn, "HBAT")
+        parse.assert_called_once()
+        self.assertEqual(set(self._blocks_of(parse.call_args)), {"2ONL", "Yavb"})
+        self.assertEqual(set(conn.h_pending), {"2ONL"})  # the new cycle's block waits for its own
+
+    def test_the_dongle_cache_never_overwrites_a_block_read_live_moments_ago(self):
+        import json
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+
+        def telemetry(*names):
+            body = {"sa": "", "ct": [{"cn": n, "co": "KDAp"} for n in names]}
+            return b"\x00" + json.dumps({"c": 5, "i": 502, "e": 0, "b": body}).encode()
+
+        def names(payload):
+            return [b["cn"] for b in json.loads(payload[payload.index(b"{"):])["b"]["ct"]]
+
+        conn = SimpleNamespace(h_block_ts={"WdRR": 100.0, "2ONL": 100.0})
+        with mock.patch.object(fakecloud.time, "monotonic", return_value=130.0):
+            out = fakecloud._without_live_blocks(telemetry("WdRR", "93VQ", "2ONL", "dHrK"), conn)
+            self.assertEqual(names(out), ["93VQ", "dHrK"])  # only the settings blocks remain
+            self.assertEqual(fakecloud._without_live_blocks(telemetry("WdRR", "2ONL"), conn), b"")
+            self.assertEqual(fakecloud._without_live_blocks(telemetry("93VQ"), conn), telemetry("93VQ"))
+        with mock.patch.object(fakecloud.time, "monotonic", return_value=400.0):  # live reads stopped
+            payload = telemetry("WdRR", "2ONL")
+            self.assertEqual(fakecloud._without_live_blocks(payload, conn), payload)
+        self.assertEqual(fakecloud._without_live_blocks(telemetry("WdRR"), SimpleNamespace()), telemetry("WdRR"))
+
+    def test_a_telemetry_reply_made_only_of_live_blocks_is_not_decoded(self):
+        import json
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        conn = SimpleNamespace(h_block_ts={"WdRR": 100.0}, probe_last=None)
+        topic = b"dtu/1/pub/service/dev_rpc_reply"
+        envelope = {"c": 5, "i": 502, "e": 0, "b": {"sa": "", "ct": [{"cn": "WdRR", "co": "KDAp"}]}}
+        body = len(topic).to_bytes(2, "big") + topic + b"\x00" + json.dumps(envelope).encode()
+        with mock.patch.object(fakecloud.time, "monotonic", return_value=120.0), \
+                mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse:
+            fakecloud._handle_publish(0x30, body, conn)
+        parse.assert_not_called()
+
+    def test_live_cycle_sends_the_fast_set_and_one_rotating_slow_command(self):
         import base64
         import json
         from types import SimpleNamespace
@@ -975,10 +1019,13 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
 
         def command_of(call):
             frame = call[0][0]
-            ci = json.loads(frame[frame.index(b"{"):])["b"].get("ci")
-            return base64.b64decode(ci)[:-3].decode()
+            raw = base64.b64decode(json.loads(frame[frame.index(b"{"):])["b"]["ci"])
+            for known in ("QMOD", "QPIWS"):
+                if raw.startswith(known.encode()):
+                    return known
+            return raw.decode().rstrip("\r")
 
-        ticks = [100.0, 100.4, 101.0, 102.0, 103.0, 109.9, 110.0, 111.0, 112.0]
+        ticks = [100.0 + i for i in range(8)] + [108.0, 109.9] + [110.0 + i for i in range(8)]
         with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 15), \
                 mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 10), \
                 mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
@@ -986,9 +1033,11 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             for _ in ticks:
                 fakecloud.poll_due_connections()
         sent = [command_of(c) for c in conn.reply.call_args_list]
-        # t=100 QPIGS, 101 QMOD, 102 QPIWS; nothing until the 10 s interval is up at 110.
-        self.assertEqual(sent, ["QPIGS", "QMOD", "QPIWS", "QPIGS", "QMOD", "QPIWS"])
-
+        fast = ["HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV", "QMOD"]
+        # One command per second, a cycle every 10 s, the slow set taking one turn each.
+        self.assertEqual(sent, fast + ["HBMS3"] + fast + ["HTEMP"])
+        # The second cycle expects the fast blocks plus V4W3 (HTEMP), nothing else.
+        self.assertEqual(conn.h_expected, frozenset({"2ONL", "Yavb", "uxJp", "WdRR", "2l0E", "Mpod", "V4W3"}))
     def test_qflag_is_asked_once_a_minute_on_the_poll_tick(self):
         import base64
         import binascii

@@ -61,11 +61,12 @@ MQTT_BROKER_HOSTNAME = os.getenv("MQTT_BROKER_HOSTNAME", "hongkong.broker.mqtt.s
 TELEMETRY_POLL_INTERVAL_SEC = int(os.getenv("TELEMETRY_POLL_INTERVAL_SEC", "0"))
 
 # The dongle answers the poll above every time, but the inverter data inside is a cache
-# it refreshes about once a minute. Live status queries (PI30 QPIGS, QMOD, QPIWS) are
-# relayed to the inverter itself and answered fresh, so they are sent this often and
-# merged into the state. 0 disables them; a value below LIVE_POLL_MIN_INTERVAL_SEC is
-# raised to it (fakecloud.py), because the dongle refuses queries that arrive too close.
-# Only used when LOCAL_CLOUD_IP is set.
+# it refreshes about once a minute. Read commands sent to the dongle (the "H" block reads
+# HBAT, HBMS1, HGRID, ..., and QMOD, QPIWS) are relayed to the inverter itself and
+# answered fresh, so a cycle of them is sent this often and decoded like a telemetry
+# reply. A cycle sends one command per second, so it takes about 8 s and a smaller value
+# cannot make it shorter. 0 disables it; a value below LIVE_POLL_MIN_INTERVAL_SEC is
+# raised to it (fakecloud.py). Only used when LOCAL_CLOUD_IP is set.
 LIVE_POLL_INTERVAL_SEC = int(os.getenv("LIVE_POLL_INTERVAL_SEC", "10"))
 
 # Comma-separated, each suffix-matched rather than an exact hostname: the vendor's

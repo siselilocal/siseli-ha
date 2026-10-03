@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.81] - 2026-10-03
+
+### Changed
+
+- **Live reads now use the inverter's own "H" block commands, so the BMS, the battery
+  power and the grid power are live too, not only the 2.6.80 `QPIGS` fields.** A search
+  for other people's work on the same dongle family found
+  [solarplug-esphome](https://github.com/rutgerputter/solarplug-esphome), which lists the
+  read commands an ESP32 sends to the inverter over RS232: ASCII plus CR, no CRC, the
+  same form as the vendor app's `HEEP1`/`HEEP2`. Sent to the dongle as commands, all
+  eleven were relayed and answered fresh (2026-10-03: BMS current 0 -> 4.9 -> 4.8 A,
+  mains voltage 240.0 -> 240.1 -> 240.2 V within 30 s, against the dongle's one-minute
+  cache). Each answer is the text of one telemetry block (`HGRID` = `WdRR`, `HOP` =
+  `2l0E`, `HBAT` = `2ONL`, `HPV` = `Mpod`, `HBMS1` = `Yavb`, `HBMS2` = `uxJp`, `HBMS3` =
+  `v09K`, `HSTS` = `eo8w`, `HTEMP` = `V4W3`, `HGEN` = `COST`, `HPVB` = `noeP`), so each cycle
+  hands them to the same decoder as one telemetry reply: no new sensor, entity or decoder,
+  and the calculated powers and energies behave exactly as before.
+- **Each cycle (every `LIVE_POLL_INTERVAL_SEC`)** sends, one command per second,
+  `HBAT HBMS1 HBMS2 HGRID HOP HPV QMOD` plus one of `HSTS HBMS3 HTEMP HGEN HPVB QPIWS`
+  in turn. `HBAT` and `HBMS1` are decoded together, in one payload, because the battery
+  power is derived from the currents of the payload in hand (BMS first, then the
+  inverter's own): apart, it would jump between two bases. A cycle takes about 8 s, so a
+  setting under 8 cannot make it faster; the cell voltages, temperatures, energies, PV2
+  and warnings therefore refresh every 6 cycles (about a minute at the default).
+- **The dongle's own copy of a block is ignored while a live read of it is less than
+  150 s old.** Otherwise every 15 s poll would put a value up to a minute old over the
+  fresh one. A block with no recent live read keeps using the dongle's copy.
+- A line that fits none of the eleven shapes (or two of them) is never decoded, so a
+  lost or reordered answer cannot put one command's text under another block's name.
+  If an answer goes missing, the others of that cycle are decoded when the next cycle's
+  first answer arrives.
+
+### Removed
+
+- The `QPIGS` merge of 2.6.80: the H blocks carry every field it did (and the BMS and
+  the signed mains power it could not).
+
 ## [2.6.80] - 2026-10-02
 
 ### Added

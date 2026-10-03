@@ -265,7 +265,10 @@ def _handle_publish(control: int, body: bytes, conn: tcpstack.Connection) -> byt
         log_payload_preview("[LOCAL CLOUD PAYLOAD]", payload, topic=topic)
 
     if payload:
-        parsed_ok = SolarParser.parse_payload(payload, source_topic=topic)
+        # Blocks a live read refreshed seconds ago are left out of the dongle's own
+        # (possibly minute-old) copy; nothing left means nothing to decode.
+        fresh = _without_live_blocks(payload, conn)
+        parsed_ok = SolarParser.parse_payload(fresh, source_topic=topic) if fresh else True
         if not parsed_ok and LOG_UNPARSED_PUBLISH:
             log_payload_preview("[LOCAL CLOUD PAYLOAD NOT PARSED]", payload, topic=topic)
         if (
@@ -318,77 +321,86 @@ def _pi30_verified_payload(raw: bytes) -> Optional[str]:
     return body[1:].decode("ascii", errors="replace")
 
 
-def _apply_qpigs(raw: bytes, conn: tcpstack.Connection) -> None:
-    """Merge a QPIGS answer (live status, asked every _QPIGS_INTERVAL_SEC) into the
-    state, so PV, grid, output and battery voltage are as fresh as the inverter
-    itself instead of the dongle's once-a-minute cache.
+def _h_block_of(raw: bytes) -> Optional[str]:
+    """The telemetry block an H command answer is (HGRID -> WdRR, HBMS1 -> Yavb, ...),
+    judged by the answer's own shape, so a lost or reordered reply can never put one
+    command's text under another block's name. None when it fits no block, or two."""
+    try:
+        text = raw.decode("ascii").strip("\r\n")
+    except UnicodeDecodeError:
+        return None
+    if not text.startswith("("):
+        return None
+    tokens = text[1:].split(" ")
+    matches = [command for command, fits in _H_SHAPES.items() if fits(tokens)]
+    return _H_BLOCKS[matches[0]] if len(matches) == 1 else None
 
-    Same keys, same units as the telemetry blocks (2l0E, WdRR, 2ONL, Mpod), so the
-    entities do not change. Generation and load power get their calculated twins
-    and energy counters through the very integrator the blocks use. Not derived
-    here: battery power (the BMS current that feeds it is only in the slow blocks;
-    the QPIGS one is a whole-ampere legacy figure that disagrees with it) and grid
-    import (the signed mains power is not in QPIGS). Every field is dropped when
-    its token does not parse, never defaulted, and a reply whose CRC fails is not
-    used at all."""
-    from . import parsers as _parsers
-    from . import state as _shared_state
 
-    payload = _pi30_verified_payload(raw)
-    tokens = payload.split(" ") if payload is not None else []
-    if len(tokens) < _QPIGS_MIN_TOKENS:
-        if not getattr(conn, "qpigs_bad_logged", False):
-            conn.qpigs_bad_logged = True
-            log("[CONTROL] a QPIGS answer failed its CRC or was too short; ignored", level="warning")
+def _collect_live_block(block: str, raw: bytes, conn: tcpstack.Connection) -> None:
+    """Hold one live block until the cycle's others are in, then decode them together.
+
+    Together because the decoder derives battery power from the currents of the payload
+    in hand: HBAT (inverter current) and HBMS1 (BMS current) in two payloads would make
+    the figure jump between two bases. When a reply went missing the leftovers are
+    decoded as soon as the next cycle's first answer shows the cycle has moved on."""
+    pending = getattr(conn, "h_pending", None)
+    if pending is None:
+        pending = conn.h_pending = {}
+    cycle = getattr(conn, "live_cycle", 0)
+    if pending and getattr(conn, "h_pending_cycle", cycle) != cycle:
+        _flush_live_blocks(conn)
+        pending = conn.h_pending
+    conn.h_pending_cycle = cycle
+    pending[block] = raw
+    stamps = getattr(conn, "h_block_ts", None)
+    if stamps is None:
+        stamps = conn.h_block_ts = {}
+    stamps[block] = time.monotonic()
+    expected = getattr(conn, "h_expected", frozenset())
+    if expected and expected.issubset(pending):
+        _flush_live_blocks(conn)
+
+
+def _flush_live_blocks(conn: tcpstack.Connection) -> None:
+    """Decode the held blocks exactly as if the dongle had sent them in one telemetry
+    reply: same envelope, same parse_payload, so the entities, the derived power and
+    energy, the publish throttle and the freshness watchdog all behave as before."""
+    pending, conn.h_pending = getattr(conn, "h_pending", {}), {}
+    if not pending:
         return
-    conn.qpigs_bad_logged = False
-
-    as_float = SolarParser._to_float
-    as_int = SolarParser._to_int
-    values = {
-        "grid_v": as_float(tokens[0]),
-        "grid_hz": as_float(tokens[1]),
-        "out_v": as_float(tokens[2]),
-        "out_hz": as_float(tokens[3]),
-        "apparent_va": as_int(tokens[4]),
-        "load_w": as_int(tokens[5]),
-        "load_pct": as_int(tokens[6]),
-        "bus_voltage": as_float(tokens[7]),
-        "bat_v": as_float(tokens[8]),
-        "bat_charge_current": as_float(tokens[9]),
-        "bat_cap": as_int(tokens[10]),
-        "pv_current_a": as_float(tokens[12]),
-        "pv_v": as_float(tokens[13]),
-        "dischg_current": as_float(tokens[15]),
-        "pv_w": as_int(tokens[19]),
+    envelope = {
+        "c": 5, "t": "live", "s": "live", "i": 502, "e": 0,
+        "b": {"sa": "", "ct": [{"cn": name, "co": base64.b64encode(raw).decode()} for name, raw in pending.items()]},
     }
-    ranges = {"load_pct": (0, 200), "bat_v": (0, 100), "bat_cap": (0, 100)}
-    state = {}
-    for key, value in values.items():
-        low, high = ranges.get(key, (None, None))
-        if value is None or (low is not None and not low <= value <= high):
-            continue
-        state[key] = round(value, 2) if isinstance(value, float) else value
+    payload = b"\x00" + json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+    SolarParser.parse_payload(payload, source_topic=f"dtu/{conn.dtu_id}/pub/service/dev_rpc_reply")
 
-    derived = {}
-    if "load_w" in state:
-        derived["c_load_w"] = SolarParser._scale_main_power(state["load_w"])
-    if "pv_w" in state:
-        pv_total_w = state["pv_w"]
-        pv2_w = _shared_state.LAST_STATE.get("pv2_power_w")
-        if isinstance(pv2_w, (int, float)):
-            pv_total_w += int(round(float(pv2_w)))
-        state["generation_power_w"] = pv_total_w
-        derived["c_generation_power_w"] = SolarParser._scale_main_power(pv_total_w)
-    # Only the two power keys go in, so the integrator touches the generation and
-    # load domains and leaves battery and grid (no key of theirs present) alone.
-    SolarParser._apply_energy_dashboard_calculations(derived)
-    state.update(derived)
 
-    if not state:
-        return
-    _shared_state.update_state(state)
-    _parsers.PENDING_PUBLISH = True
+def _without_live_blocks(payload: bytes, conn: tcpstack.Connection) -> bytes:
+    """The dongle's own telemetry minus the blocks a live read refreshed recently.
+
+    Its copy can be a minute old, and decoding it would put an old value over a fresh
+    one every poll. A block with no recent live read (the command failing, live
+    polling off) is kept, so the cache is still the fallback. b"" when nothing is left."""
+    stamps = getattr(conn, "h_block_ts", None)
+    if not stamps:
+        return payload
+    envelope = _extract_envelope(payload)
+    body = envelope.get("b") if isinstance(envelope, dict) else None
+    blocks = body.get("ct") if isinstance(body, dict) else None
+    if not isinstance(blocks, list):
+        return payload
+    now = time.monotonic()
+    kept = [
+        block for block in blocks
+        if not (isinstance(block, dict) and now - stamps.get(block.get("cn"), -1e9) < _LIVE_BLOCK_FRESH_SEC)
+    ]
+    if len(kept) == len(blocks):
+        return payload
+    if not kept:
+        return b""
+    body["ct"] = kept
+    return b"\x00" + json.dumps(envelope, separators=(",", ":")).encode("utf-8")
 
 
 def _publish_live(values: dict) -> None:
@@ -443,8 +455,9 @@ def _log_command_reply(payload: bytes, conn: tcpstack.Connection) -> None:
         # same second as the minute's QFLAG would otherwise swap the labels.
         _apply_qflag(text, conn)
         return
-    if _QPIGS_RE.match(text):
-        _apply_qpigs(raw, conn)
+    block = _h_block_of(raw)
+    if block is not None:
+        _collect_live_block(block, raw, conn)
         return
     live = _pi30_verified_payload(raw)
     if live is not None and live in _QMOD_MODES:
@@ -587,14 +600,54 @@ _QFLAG_KEYS = {
 }
 _QFLAG_INTERVAL_SEC = 60
 #: The dongle answers every 15 s dev_rpc poll, but the inverter data inside only
-#: changes about once a minute (it serves a cache). PI30 queries asked directly are
-#: relayed to the inverter and answered fresh (verified 2026-10-02: every QPIGS answer
-#: differed, 10 s apart; QMOD and QPIWS answered the same way). Every
-#: LIVE_POLL_INTERVAL_SEC they are sent one per second, in this order, and merged by
-#: _apply_qpigs / _apply_qmod / _apply_qpiws. The dongle answers a query with error
-#: 104 when another is still pending, hence one per tick and a floor on the interval.
+#: changes about once a minute (it serves a cache). Commands sent to the dongle are
+#: relayed to the inverter and answered fresh (verified 2026-10-02/03). The "H" read
+#: commands of this inverter family (ASCII + CR, no CRC -- the app's own HEEP1/HEEP2
+#: are two of them; names from github.com/rutgerputter/solarplug-esphome) each return
+#: the very text of one telemetry block, so the answers are fed to the normal decoder as
+#: blocks. Every LIVE_POLL_INTERVAL_SEC a cycle sends, one command per second, the fast
+#: set plus one command of the slow set (rotating), so each slow block refreshes every
+#: len(_LIVE_SLOW) cycles. The dongle answers a command with error 104 when another is
+#: still pending, hence one per tick; the cycle is therefore about 8 s long and a
+#: smaller interval cannot make it shorter. The floor below only guards the setting.
 LIVE_POLL_MIN_INTERVAL_SEC = 5
-_LIVE_QUERIES = ("QPIGS", "QMOD", "QPIWS")
+_H_BLOCKS = {
+    "HGRID": "WdRR",
+    "HOP": "2l0E",
+    "HBAT": "2ONL",
+    "HPV": "Mpod",
+    "HBMS1": "Yavb",
+    "HBMS2": "uxJp",
+    "HSTS": "eo8w",
+    "HBMS3": "v09K",
+    "HTEMP": "V4W3",
+    "HGEN": "COST",
+    "HPVB": "noeP",
+}
+#: HBAT and HBMS1 go together and in one payload: the battery power is computed from
+#: whichever currents the payload carries (BMS first, then the inverter's own), so they
+#: must not arrive in separate payloads. QMOD fills the Mode sensor.
+_LIVE_FAST = ("HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV", "QMOD")
+_LIVE_SLOW = ("HSTS", "HBMS3", "HTEMP", "HGEN", "HPVB", "QPIWS")
+#: A cached copy of a block is dropped (see _without_live_blocks) while its live read
+#: is younger than this, so the dongle's up-to-a-minute-old copy never overwrites it.
+_LIVE_BLOCK_FRESH_SEC = 150.0
+#: What each answer must look like, so a mislabelled or foreign line is never decoded
+#: as the wrong block. Token counts and one or two telltale tokens of the real answers
+#: (2026-10-03); the eleven shapes exclude each other.
+_H_SHAPES = {
+    "HBMS1": lambda t: len(t) == 10 and re.fullmatch(r"[01]{16}", t[1]) is not None,
+    "HBMS2": lambda t: len(t) == 8 and "." in t[0] and len(t[2]) == 1,
+    "HBMS3": lambda t: len(t) == 17 and re.fullmatch(r"\d{4}", t[0]) is not None,
+    "HGRID": lambda t: len(t) == 10 and "." in t[0] and "." in t[1] and t[6][:1] in "+-",
+    "HOP": lambda t: len(t) == 9 and "." in t[0] and "." in t[7] and "." not in t[3],
+    "HBAT": lambda t: len(t) == 8 and len(t[0]) == 2 and "." in t[1] and "." not in t[0],
+    "HPV": lambda t: len(t) == 9 and "." in t[0] and "." in t[3],
+    "HTEMP": lambda t: len(t) == 11 and all(x.isdigit() for x in t),
+    "HGEN": lambda t: len(t) == 7 and len(t[0]) == 6 and ":" in t[1],
+    "HSTS": lambda t: len(t) == 3 and len(t[0]) == 2 and t[1][:1].isalpha(),
+    "HPVB": lambda t: len(t) == 6 and "." in t[0] and "." in t[4],
+}
 #: PI30 QMOD letter -> the "mode" sensor's text (same wording as the sensor's old tests).
 _QMOD_MODES = {
     "P": "Power On Mode",
@@ -609,8 +662,6 @@ _QMOD_MODES = {
     "H": "Power Saving Mode",
 }
 _QPIWS_RE = re.compile(r"^[01]{20,40}$")
-_QPIGS_RE = re.compile(r"^\(\d{3}\.\d \d{2}\.\d \d{3}\.\d \d{2}\.\d ")
-_QPIGS_MIN_TOKENS = 20
 _PI30_BUMPABLE = (0x28, 0x0D, 0x0A, 0x00)
 _QFLAG_RE = re.compile(r"^\(E([a-z]*)D([a-z]*)")
 
@@ -1136,12 +1187,20 @@ def poll_due_connections() -> None:
                 queue = conn.live_queue = []
             if not queue and now >= getattr(conn, "next_live_ts", 0.0):
                 conn.next_live_ts = now + live_interval
-                queue.extend(_LIVE_QUERIES)
+                cycle = getattr(conn, "live_cycle", 0) + 1
+                conn.live_cycle = cycle
+                queue.extend(_LIVE_FAST)
+                queue.append(_LIVE_SLOW[cycle % len(_LIVE_SLOW)])
+                conn.h_expected = frozenset(_H_BLOCKS[c] for c in queue if c in _H_BLOCKS)
             if queue and now >= getattr(conn, "live_send_ts", 0.0):
                 command = queue.pop(0)
                 conn.live_send_ts = now + 1.0
                 try:
-                    _send_control_ci(build_write_ci(command, ""), conn=conn)
+                    if command in _H_BLOCKS:
+                        ci = base64.b64encode(f"{command}\r".encode("ascii")).decode()
+                    else:
+                        ci = build_write_ci(command, "")
+                    _send_control_ci(ci, conn=conn)
                 except Exception as exc:
                     log(f"[LOCAL CLOUD ERROR] {command} query failed: {exc}", level="error")
         if now < next_poll_ts:
