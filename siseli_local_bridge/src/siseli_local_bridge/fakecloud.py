@@ -356,11 +356,20 @@ def _collect_live_block(block: str, raw: bytes, conn: tcpstack.Connection) -> No
             pending = conn.h_pending
         conn.h_done = set()
     conn.h_pending_cycle = cycle
-    pending[block] = raw
     stamps = getattr(conn, "h_block_ts", None)
     if stamps is None:
         stamps = conn.h_block_ts = {}
     stamps[block] = time.monotonic()
+    if block in _LIVE_SIDECAR:
+        # Never decoded alone (see _LIVE_SIDECAR): kept, and sent along with the next
+        # decoding of the block it belongs with. Counted as done for the cycle.
+        sidecar = getattr(conn, "h_sidecar", None)
+        if sidecar is None:
+            sidecar = conn.h_sidecar = {}
+        sidecar[block] = raw
+        conn.h_done = set(getattr(conn, "h_done", set())) | {block}
+    else:
+        pending[block] = raw
     expected = getattr(conn, "h_expected", frozenset())
     done = getattr(conn, "h_done", set())
     if expected and expected.issubset(set(pending) | done):
@@ -385,9 +394,13 @@ def _flush_live_blocks(conn: tcpstack.Connection, only=None) -> None:
     if not pending:
         return
     conn.h_done = set(getattr(conn, "h_done", set())) | set(pending)
+    blocks = dict(pending)
+    for name, raw in getattr(conn, "h_sidecar", {}).items():
+        if _LIVE_SIDECAR[name] in pending:
+            blocks[name] = raw
     envelope = {
         "c": 5, "t": "live", "s": "live", "i": 502, "e": 0,
-        "b": {"sa": "", "ct": [{"cn": name, "co": base64.b64encode(raw).decode()} for name, raw in pending.items()]},
+        "b": {"sa": "", "ct": [{"cn": name, "co": base64.b64encode(raw).decode()} for name, raw in blocks.items()]},
     }
     payload = b"\x00" + json.dumps(envelope, separators=(",", ":")).encode("utf-8")
     SolarParser.parse_payload(payload, source_topic=f"dtu/{conn.dtu_id}/pub/service/dev_rpc_reply")
@@ -408,10 +421,18 @@ def _without_live_blocks(payload: bytes, conn: tcpstack.Connection) -> bytes:
     if not isinstance(blocks, list):
         return payload
     now = time.monotonic()
-    kept = [
-        block for block in blocks
-        if not (isinstance(block, dict) and now - stamps.get(block.get("cn"), -1e9) < _LIVE_BLOCK_FRESH_SEC)
-    ]
+
+    def live(name) -> bool:
+        if now - stamps.get(name, -1e9) < _LIVE_BLOCK_FRESH_SEC:
+            return True
+        # A sidecar block (PV2) is dropped as soon as the block it rides with (PV1) is
+        # live, even before its own first live read: left in, the dongle's copy of it
+        # arrives without any PV1 block and decodes to a generation of 0 W (seen for the
+        # first minute after each restart in 2.6.84).
+        host = _LIVE_SIDECAR.get(name)
+        return host is not None and now - stamps.get(host, -1e9) < _LIVE_BLOCK_FRESH_SEC
+
+    kept = [block for block in blocks if not (isinstance(block, dict) and live(block.get("cn")))]
     if len(kept) == len(blocks):
         return payload
     if not kept:
@@ -654,6 +675,13 @@ _LIVE_FAST = ("HBAT", "HBMS1", "HBMS2", "HBMS3", "HGRID", "HOP", "HPV", "QMOD")
 #: a payload that carries both: read apart, those five values never updated (2.6.81-82).
 _LIVE_GROUPS = (frozenset({"2ONL", "Yavb", "uxJp", "v09K"}), frozenset({"WdRR", "2l0E", "Mpod"}))
 _LIVE_SLOW = ("HSTS", "HTEMP", "HGEN", "HPVB", "QPIWS")
+#: Blocks that are never decoded on their own but ride along with another one. The
+#: decoder adds PV1 and PV2 into generation_power_w from the payload in hand, so noeP
+#: (PV2, read in the slow rotation) decoded alone published generation_power_w = 0 W,
+#: and the calculated generation power and energy with it, every fifth cycle
+#: (2.6.81-83). Its last answer now goes into every decoding of the PV1 block (Mpod);
+#: PV2 can therefore be up to a few cycles old in that sum, never missing or zero.
+_LIVE_SIDECAR = {"noeP": "Mpod"}
 #: A cached copy of a block is dropped (see _without_live_blocks) while its live read
 #: is younger than this, so the dongle's up-to-a-minute-old copy never overwrites it.
 _LIVE_BLOCK_FRESH_SEC = 150.0

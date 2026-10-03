@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.85] - 2026-10-03
+
+### Fixed
+
+- **Two more 0 W readings of `generation_power_w` in the minute after each restart.** 2.6.84
+  stopped decoding the PV2 block (`noeP`) alone, but only dropped the dongle's own copy of
+  it once a live read of it was less than 150 s old. The first live PV2 read comes up to a
+  minute after the first PV1 one (it is one of five rotating commands), and meanwhile the
+  dongle's copy of PV2 (its telemetry fragment carries it without PV1) decoded to a
+  generation of 0 W: 10:42:18 and 10:42:28 after the 10:41:41 restart of 2026-10-03, and
+  the same pair after the earlier restarts. The dongle's PV2 copy is now dropped as soon as
+  the PV1 block is live, whether or not PV2 itself has been read yet.
+## [2.6.84] - 2026-10-03
+
+### Fixed
+
+- **`generation_power_w` (and the calculated generation power) dropped to 0 W for one
+  publication about every fifth cycle, in 2.6.81 to 2.6.83.** Reported on 2026-10-03 and
+  confirmed in the recorder: 31 zeros in 30 minutes on both entities, 47 to 53 s apart.
+  The decoder adds PV1 and PV2 into `generation_power_w` from the payload in hand; the PV2
+  block (`noeP`, `HPVB`) was read in the slow rotation and decoded alone, so a payload with
+  no PV1 block summed to PV2's 0 W. The PV2 block is now never decoded on its own: its last
+  answer is sent along with every decoding of the PV1 block (`Mpod`), so the sum always has
+  PV1, and PV2 is at most a few cycles old in it.
+- **The calculated generation energy was under-counted while that went on** (each zero also
+  moved the generation clock forward, so the next real reading integrated a much shorter
+  interval): roughly a fifth of the generation was missed from 2.6.81 until this fix. The
+  counter cannot be corrected after the fact and is not reset; it is right from now on.
 ## [2.6.83] - 2026-10-03
 
 ### Fixed

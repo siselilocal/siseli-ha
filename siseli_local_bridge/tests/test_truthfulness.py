@@ -1093,6 +1093,73 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         self.assertEqual(snapshot["bms_remaining_ah"], 41.0)
         self.assertEqual(snapshot["c_battery_charge_power_w"], 257)  # one payload, BMS current basis
 
+    def test_the_pv2_block_never_zeroes_the_generation_power(self):
+        """2.6.81-83 decoded noeP (HPVB, PV2) alone every fifth cycle; with no PV1 block
+        in the payload the decoder took PV2's 0 W for the whole generation, so
+        generation_power_w and the calculated generation power and energy dropped to
+        zero for one publication (31 times in 30 minutes, 2026-10-03). PV2 now only
+        rides along with the PV1 block."""
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, state as shared_state
+        from tests.helpers import isolated_state
+        power = ["HGRID", "HOP", "HPV"]
+        with isolated_state():
+            # A cycle whose slow command is HPVB, read first: nothing is decoded for it alone.
+            conn = self._h_conn(["WdRR", "2l0E", "Mpod", "noeP"], cycle=1)
+            with mock.patch.object(fakecloud.SolarParser, "parse_payload", wraps=fakecloud.SolarParser.parse_payload) as parse:
+                self._feed(conn, "HPVB")
+                parse.assert_not_called()
+                self.assertNotIn("generation_power_w", shared_state.snapshot_state())
+                for command in power:
+                    self._feed(conn, command)
+                parse.assert_called_once()
+                self.assertEqual(set(self._blocks_of(parse.call_args)), {"WdRR", "2l0E", "Mpod", "noeP"})
+            snapshot = shared_state.snapshot_state()
+            self.assertEqual(snapshot["generation_power_w"], 728)
+            self.assertEqual(snapshot["pv2_v"], 0.0)
+            # A cycle whose slow command is HPVB, read last: the figure must not move.
+            conn.live_cycle = 2
+            conn.h_expected = frozenset({"WdRR", "2l0E", "Mpod", "noeP"})
+            for command in power:
+                self._feed(conn, command)
+            self._feed(conn, "HPVB")
+            self.assertEqual(shared_state.snapshot_state()["generation_power_w"], 728)
+            self.assertEqual(shared_state.snapshot_state()["c_generation_power_w"], 728)
+
+    def test_the_dongles_pv2_copy_is_dropped_once_pv1_is_live_even_before_pv2_is_read(self):
+        """After a restart the first live PV2 read comes up to a minute after the PV1 one;
+        meanwhile the dongle's copy of PV2 (its telemetry fragments carry it without PV1)
+        decoded to generation_power_w = 0 W: two zeros in the minute after the 2.6.84
+        restart of 2026-10-03."""
+        import json
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+
+        def telemetry(*names):
+            body = {"sa": "", "ct": [{"cn": n, "co": "KDAp"} for n in names]}
+            return b"\x00" + json.dumps({"c": 5, "i": 502, "e": 0, "b": body}).encode()
+
+        def names(payload):
+            return [b["cn"] for b in json.loads(payload[payload.index(b"{"):])["b"]["ct"]]
+
+        conn = SimpleNamespace(h_block_ts={"Mpod": 100.0, "WdRR": 100.0})  # no noeP read yet
+        with mock.patch.object(fakecloud.time, "monotonic", return_value=130.0):
+            out = fakecloud._without_live_blocks(telemetry("93VQ", "Yavb", "noeP", "dHrK"), conn)
+            self.assertEqual(names(out), ["93VQ", "Yavb", "dHrK"])
+        with mock.patch.object(fakecloud.time, "monotonic", return_value=400.0):  # PV1 reads stopped
+            payload = telemetry("noeP")
+            self.assertEqual(fakecloud._without_live_blocks(payload, conn), payload)
+
+    def test_before_any_pv2_answer_the_pv1_block_is_decoded_alone(self):
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        conn = self._h_conn(["WdRR", "2l0E", "Mpod"])
+        with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse:
+            for command in ("HGRID", "HOP", "HPV"):
+                self._feed(conn, command)
+        self.assertEqual(set(self._blocks_of(parse.call_args)), {"WdRR", "2l0E", "Mpod"})
+
     def test_qflag_is_asked_once_a_minute_on_the_poll_tick(self):
         import base64
         import binascii
