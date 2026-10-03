@@ -625,7 +625,7 @@ _QFLAG_INTERVAL_SEC = 60
 #: blocks. Every LIVE_POLL_INTERVAL_SEC a cycle sends, one command per second, the fast
 #: set plus one command of the slow set (rotating), so each slow block refreshes every
 #: len(_LIVE_SLOW) cycles. The dongle answers a command with error 104 when another is
-#: still pending, hence one per tick; the cycle is therefore about 8 s long and a
+#: still pending, hence one per tick; the cycle is therefore about 9 s long and a
 #: smaller interval cannot make it shorter. The floor below only guards the setting.
 LIVE_POLL_MIN_INTERVAL_SEC = 5
 _H_BLOCKS = {
@@ -644,13 +644,16 @@ _H_BLOCKS = {
 #: HBAT and HBMS1 go together and in one payload: the battery power is computed from
 #: whichever currents the payload carries (BMS first, then the inverter's own), so they
 #: must not arrive in separate payloads. QMOD fills the Mode sensor.
-_LIVE_FAST = ("HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV", "QMOD")
+_LIVE_FAST = ("HBAT", "HBMS1", "HBMS2", "HBMS3", "HGRID", "HOP", "HPV", "QMOD")
 #: Blocks decoded as soon as the whole group has been read, instead of waiting for the
-#: cycle's last command: the battery trio (about 3 s into a cycle) and the power trio
-#: (about 6 s). A group is only used when the cycle expects all of it; the grid, output
-#: and PV derived values do not depend on each other or on the battery's.
-_LIVE_GROUPS = (frozenset({"2ONL", "Yavb", "uxJp"}), frozenset({"WdRR", "2l0E", "Mpod"}))
-_LIVE_SLOW = ("HSTS", "HBMS3", "HTEMP", "HGEN", "HPVB", "QPIWS")
+#: cycle's last command: the battery group (about 4 s into a cycle) and the power trio
+#: (about 7 s). A group is only used when the cycle expects all of it; the grid, output
+#: and PV derived values do not depend on each other or on the battery's. HBMS2 (uxJp,
+#: the BMS capacities) and HBMS3 (v09K, the 16 cells) are in the battery group because
+#: the decoder derives the cell summary (max, min, delta and their positions) only from
+#: a payload that carries both: read apart, those five values never updated (2.6.81-82).
+_LIVE_GROUPS = (frozenset({"2ONL", "Yavb", "uxJp", "v09K"}), frozenset({"WdRR", "2l0E", "Mpod"}))
+_LIVE_SLOW = ("HSTS", "HTEMP", "HGEN", "HPVB", "QPIWS")
 #: A cached copy of a block is dropped (see _without_live_blocks) while its live read
 #: is younger than this, so the dongle's up-to-a-minute-old copy never overwrites it.
 _LIVE_BLOCK_FRESH_SEC = 150.0

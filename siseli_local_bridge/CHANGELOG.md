@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.83] - 2026-10-03
+
+### Fixed
+
+- **The five cell-summary sensors froze in 2.6.81 and 2.6.82** (BMS max cell, min cell,
+  cell delta, and the max and min cell positions). Found on 2026-10-03 by comparing them
+  with the sixteen cell voltages: they read 3327 / 3316 / 11 mV while the cells read 3337 to
+  3349 mV (a real spread of 12 mV). The decoder derives them only from a payload that carries
+  both the BMS capacities (`uxJp`, `HBMS2`) and the cells (`v09K`, `HBMS3`); since 2.6.81 the
+  first was read every cycle and the second one cycle in six, so they never met. `HBMS3` is
+  now read every cycle and decoded in the battery group with `HBAT`, `HBMS1` and `HBMS2`
+  (about 4 s into a cycle). The sixteen cell voltages are therefore live every cycle too,
+  not once a minute.
+- A cycle now has nine commands, so it takes about 9 s (it was about 8): values of
+  `LIVE_POLL_INTERVAL_SEC` under 9 cannot make it shorter. The rotating slow set is now five
+  commands (`HSTS HTEMP HGEN HPVB QPIWS`), each about once every five cycles.
 ## [2.6.82] - 2026-10-03
 
 ### Changed

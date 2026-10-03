@@ -64,7 +64,7 @@ TELEMETRY_POLL_INTERVAL_SEC = int(os.getenv("TELEMETRY_POLL_INTERVAL_SEC", "0"))
 # it refreshes about once a minute. Read commands sent to the dongle (the "H" block reads
 # HBAT, HBMS1, HGRID, ..., and QMOD, QPIWS) are relayed to the inverter itself and
 # answered fresh, so a cycle of them is sent this often and decoded like a telemetry
-# reply. A cycle sends one command per second, so it takes about 8 s and a smaller value
+# reply. A cycle sends one command per second, so it takes about 9 s and a smaller value
 # cannot make it shorter. 0 disables it; a value below LIVE_POLL_MIN_INTERVAL_SEC is
 # raised to it (fakecloud.py). Only used when LOCAL_CLOUD_IP is set.
 LIVE_POLL_INTERVAL_SEC = int(os.getenv("LIVE_POLL_INTERVAL_SEC", "10"))

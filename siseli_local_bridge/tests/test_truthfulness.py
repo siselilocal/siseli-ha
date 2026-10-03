@@ -941,17 +941,17 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
     def test_the_battery_and_power_groups_are_decoded_as_soon_as_each_is_complete(self):
         from unittest import mock
         from src.siseli_local_bridge import fakecloud
-        cycle = ["HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV", "HSTS"]
+        cycle = ["HBAT", "HBMS1", "HBMS2", "HBMS3", "HGRID", "HOP", "HPV", "HSTS"]
         conn = self._h_conn(fakecloud._H_BLOCKS[c] for c in cycle)
         with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse, \
                 mock.patch.object(fakecloud, "log") as log:
-            for command in cycle[:2]:
+            for command in cycle[:3]:
                 self._feed(conn, command)
-            parse.assert_not_called()  # HBAT and HBMS1 still wait for HBMS2: never decoded apart
-            self._feed(conn, "HBMS2")
+            parse.assert_not_called()  # the battery and BMS blocks wait for the cells: never decoded apart
+            self._feed(conn, "HBMS3")
             self.assertEqual(parse.call_count, 1)
-            self.assertEqual(set(self._blocks_of(parse.call_args)), {"2ONL", "Yavb", "uxJp"})
-            for command in cycle[3:5]:
+            self.assertEqual(set(self._blocks_of(parse.call_args)), {"2ONL", "Yavb", "uxJp", "v09K"})
+            for command in cycle[4:6]:
                 self._feed(conn, command)
             self.assertEqual(parse.call_count, 1)
             self._feed(conn, "HPV")
@@ -1058,7 +1058,7 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
                     return known
             return raw.decode().rstrip("\r")
 
-        ticks = [100.0 + i for i in range(8)] + [108.0, 109.9] + [110.0 + i for i in range(8)]
+        ticks = [100.0 + i for i in range(9)] + [109.5] + [110.0 + i for i in range(9)]
         with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 15), \
                 mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 10), \
                 mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
@@ -1066,11 +1066,33 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             for _ in ticks:
                 fakecloud.poll_due_connections()
         sent = [command_of(c) for c in conn.reply.call_args_list]
-        fast = ["HBAT", "HBMS1", "HBMS2", "HGRID", "HOP", "HPV", "QMOD"]
+        fast = ["HBAT", "HBMS1", "HBMS2", "HBMS3", "HGRID", "HOP", "HPV", "QMOD"]
         # One command per second, a cycle every 10 s, the slow set taking one turn each.
-        self.assertEqual(sent, fast + ["HBMS3"] + fast + ["HTEMP"])
-        # The second cycle expects the fast blocks plus V4W3 (HTEMP), nothing else.
-        self.assertEqual(conn.h_expected, frozenset({"2ONL", "Yavb", "uxJp", "WdRR", "2l0E", "Mpod", "V4W3"}))
+        self.assertEqual(sent, fast + ["HTEMP"] + fast + ["HGEN"])
+        # The second cycle expects the fast blocks plus COST (HGEN), nothing else.
+        self.assertEqual(conn.h_expected, frozenset({"2ONL", "Yavb", "uxJp", "v09K", "WdRR", "2l0E", "Mpod", "COST"}))
+
+    def test_the_cell_summary_is_computed_because_cells_and_capacities_share_a_payload(self):
+        """2.6.81-82 read HBMS2 (capacities) every cycle and HBMS3 (cells) one cycle in six,
+        never in the same payload, so bms_max_cell_mv, bms_min_cell_mv, bms_cell_delta_mv and
+        the two positions froze at their last value while the cells moved. The real decoder,
+        fed the real answers of 2026-10-03 as the battery group, now derives them."""
+        from src.siseli_local_bridge import fakecloud, state as shared_state
+        from tests.helpers import isolated_state
+        cycle = ["HBAT", "HBMS1", "HBMS2", "HBMS3"]
+        with isolated_state():
+            conn = self._h_conn(fakecloud._H_BLOCKS[c] for c in cycle)
+            for command in cycle:
+                self._feed(conn, command)
+            snapshot = shared_state.snapshot_state()
+        self.assertEqual(snapshot["cell_1_mv"], 3227)
+        self.assertEqual(snapshot["bms_max_cell_mv"], 3233)
+        self.assertEqual(snapshot["bms_min_cell_mv"], 3218)
+        self.assertEqual(snapshot["bms_cell_delta_mv"], 15)
+        self.assertEqual(snapshot["bms_min_cell_pos"], 16)
+        self.assertEqual(snapshot["bms_remaining_ah"], 41.0)
+        self.assertEqual(snapshot["c_battery_charge_power_w"], 257)  # one payload, BMS current basis
+
     def test_qflag_is_asked_once_a_minute_on_the_poll_tick(self):
         import base64
         import binascii
