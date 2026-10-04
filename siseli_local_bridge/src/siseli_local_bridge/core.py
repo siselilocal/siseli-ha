@@ -10,7 +10,6 @@ from typing import Optional
 
 from scapy.all import (  # type: ignore
     ARP,
-    DNS,
     ICMP,
     IP,
     TCP,
@@ -37,6 +36,7 @@ from .parsers import (
     append_stream_data,
     drop_flow,
     extract_publish_payload,
+    flush_state_cache,
     heartbeat_due,
     mqtt_type_name,
     pending_publish_due,
@@ -773,7 +773,9 @@ def check_capture_thread() -> bool:
 
 
 def publish_tick() -> bool:
-    """One timer-driven publish check, called from health_logger every 10 s.
+    """One timer-driven publish check, called from health_logger every 10 s and from
+    telemetry_poll_loop every second (the latter is what lets a live block the publish
+    throttle held back go out as soon as its window ends).
 
     Two reasons to publish without a payload arriving: the heartbeat, which keeps the
     retained state inside Home Assistant's expire_after window while the inverter is
@@ -903,8 +905,6 @@ def restore_arp() -> None:
 
 
 def shutdown(*_args) -> None:
-    global sniffer
-
     if not _state.RUNNING:
         return
 
@@ -913,16 +913,25 @@ def shutdown(*_args) -> None:
     try:
         if sniffer is not None:
             sniffer.stop()
-    except Exception:
-        pass
+    except Exception as exc:
+        log(f"[Bridge] Could not stop the sniffer: {exc}", level="debug")
+
+    # Before anything slow: the state cache (energy counters and their clocks) is
+    # written at most every STATE_CACHE_INTERVAL_SEC, so without this every restart
+    # lost the energy integrated since the last write.
+    try:
+        if flush_state_cache():
+            log("[CACHE] State saved at shutdown", level="debug")
+    except Exception as exc:
+        log(f"[CACHE] Could not save the state at shutdown: {exc}", level="warning")
 
     restore_arp()
 
     for conn in list(tcpstack.CONNECTIONS.values()):
         try:
             conn.close("shutdown")
-        except Exception:
-            pass
+        except Exception as exc:
+            log(f"[Bridge] Could not close {conn.peer_ip}:{conn.peer_port}: {exc}", level="debug")
     tcpstack.CONNECTIONS.clear()
     teardown_local_cloud_block()
 
@@ -931,8 +940,8 @@ def shutdown(*_args) -> None:
         publish_availability(False)
         client.disconnect()
         client.loop_stop()
-    except Exception:
-        pass
+    except Exception as exc:
+        log(f"[Bridge] Could not close the MQTT session cleanly: {exc}", level="debug")
 
     log("[Bridge] Stopped")
 

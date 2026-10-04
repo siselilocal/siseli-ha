@@ -825,7 +825,7 @@ class TestStartupPath(unittest.TestCase):
         from src.siseli_local_bridge import config as cfg
 
         lines = []
-        with mock.patch("src.siseli_local_bridge.core.log", side_effect=lines.append):
+        with mock.patch("src.siseli_local_bridge.core.log", side_effect=lambda message, **_kw: lines.append(message)):
             core.log_startup_configuration()
         flags = [ln for ln in lines if "DEBUG_FLAGS" in ln]
         self.assertEqual(len(flags), 1)

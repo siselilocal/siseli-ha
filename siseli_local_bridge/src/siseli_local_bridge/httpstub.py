@@ -39,11 +39,20 @@ from .loggers import log
 _HEADER_END = b"\r\n\r\n"
 
 
+#: Largest request this stub will wait for. The three calls it answers are a few hundred
+#: bytes; without a bound, headers that never end, or a huge Content-Length, held the
+#: buffer (and its memory) until the idle sweep dropped the connection.
+_MAX_REQUEST_BYTES = 64 * 1024
+
+
 def _extract_request(buffer: bytes):
     """One parsed HTTP request from the front of buffer, plus what is left over.
     Returns (None, buffer) if buffer does not yet hold a complete request."""
     header_end = buffer.find(_HEADER_END)
     if header_end == -1:
+        if len(buffer) > _MAX_REQUEST_BYTES:
+            log("[HTTP STUB] request headers never end; buffer dropped", level="warning")
+            return None, b""
         return None, buffer
 
     lines = buffer[:header_end].split(b"\r\n")
@@ -66,6 +75,9 @@ def _extract_request(buffer: bytes):
         content_length = int(headers.get("content-length", "0") or "0")
     except ValueError:
         content_length = -1
+    if content_length > _MAX_REQUEST_BYTES:
+        log(f"[HTTP STUB] Content-Length {content_length} refused; buffer dropped", level="warning")
+        return None, b""
     if content_length < 0:
         # A negative Content-Length (or one that fails to parse as an int at all)
         # made body_start + content_length land BEFORE body_start, so the

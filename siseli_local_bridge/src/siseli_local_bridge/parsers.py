@@ -776,17 +776,27 @@ def republish_state(now: Optional[float] = None, due=None) -> bool:
     return delivered
 
 
-def _write_state_cache(snapshot: Dict[str, object], now: Optional[float] = None) -> bool:
+def flush_state_cache() -> bool:
+    """Write the state cache now, whatever the throttle says. Called once at shutdown:
+    the cache otherwise lags by up to STATE_CACHE_INTERVAL_SEC, and every restart or
+    rebuild lost that much integrated energy."""
+    return _write_state_cache(_shared_state.snapshot_state(), force=True)
+
+
+def _write_state_cache(snapshot: Dict[str, object], now: Optional[float] = None, force: bool = False) -> bool:
     """Persist the state cache, at most once per STATE_CACHE_INTERVAL_SEC.
 
     Throttling is not optional here. This runs on the scapy capture callback, and
     adding fsync without it would make the hot path slower than the unsafe version it
-    replaces -- a slow flush stalls libpcap and drops segments.
+    replaces -- a slow flush stalls libpcap and drops segments. `force` is for the one
+    caller that is not on that hot path: shutdown.
     """
     global LAST_CACHE_WRITE_TS
     now = now if now is not None else time.monotonic()
-    if LAST_CACHE_WRITE_TS and (now - LAST_CACHE_WRITE_TS) < STATE_CACHE_INTERVAL_SEC:
+    if not force and LAST_CACHE_WRITE_TS and (now - LAST_CACHE_WRITE_TS) < STATE_CACHE_INTERVAL_SEC:
         return False
+    if force and not snapshot:
+        return False  # nothing decoded yet: never overwrite a good cache with an empty one
     # A copy: the caller publishes `snapshot` to MQTT right after this, and the clocks
     # must never reach the broker. Read after the snapshot, on this same thread -- the
     # only writer of both -- so the pair on disk always comes from one payload.

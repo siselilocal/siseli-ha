@@ -777,8 +777,11 @@ class TestTestEnvironmentMatchesShippedDefaults(unittest.TestCase):
         from tests.helpers import BASE_ENV
 
         options = _load_yaml(ADDON / "config.yaml")["options"]
+        # The addresses of one install, which a published copy replaces with
+        # placeholders: they are not a default a test could rely on.
+        site_specific = {"INVERTER_IP", "ROUTER_IP"}
         for key, shipped in sorted(options.items()):
-            if key not in BASE_ENV:
+            if key not in BASE_ENV or key in site_specific:
                 continue  # list-valued options are represented differently
             with self.subTest(option=key):
                 expected = shipped

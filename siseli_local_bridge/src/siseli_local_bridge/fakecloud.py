@@ -43,6 +43,7 @@ from . import tcpstack
 from .config import (
     LIVE_POLL_INTERVAL_SEC,
     LOG_MQTT_PAYLOAD_PREVIEW,
+    MAX_MQTT_PACKET,
     LOG_MQTT_TOPICS,
     LOG_PACKETS,
     LOG_UNPARSED_PUBLISH,
@@ -116,6 +117,10 @@ def extract_mqtt_frames(buffer: bytes):
         if decoded is None:
             break
         remaining_len, body_start = decoded
+        if remaining_len > MAX_MQTT_PACKET:
+            # Nothing this bridge ever receives comes near it, and the buffer would
+            # otherwise be held until a frame of that announced size has arrived.
+            raise ValueError(f"MQTT packet of {remaining_len} bytes exceeds {MAX_MQTT_PACKET}")
         frame_end = body_start + remaining_len
         if frame_end > len(buffer):
             break
@@ -281,10 +286,15 @@ def _handle_publish(control: int, body: bytes, conn: tcpstack.Connection) -> byt
         if topic.endswith("/dev_rpc_reply"):
             # DIAGNOSTIC (2026-09-13): pairs with poll_due_connections' stall
             # detection -- marks this poll as answered so the next stall (if any)
-            # gets logged fresh instead of being suppressed by an old flag.
-            conn.poll_reply_count = getattr(conn, "poll_reply_count", 0) + 1
-            conn.last_reply_ts = time.monotonic()
-            conn.poll_stall_logged = False
+            # gets logged fresh instead of being suppressed by an old flag. Only the
+            # answers to the poll itself (i=502, the answer to i=501) count: since
+            # 2.6.80 the answers to the live commands (i=504) also arrive here, and
+            # counting them made the stall check unable to ever fire.
+            envelope = _extract_envelope(payload)
+            if isinstance(envelope, dict) and envelope.get("i") == 502:
+                conn.poll_reply_count = getattr(conn, "poll_reply_count", 0) + 1
+                conn.last_reply_ts = time.monotonic()
+                conn.poll_stall_logged = False
             _log_command_reply(payload, conn)
 
     return _build_ack_publish(topic, payload)
@@ -352,6 +362,7 @@ def _collect_live_block(block: str, raw: bytes, conn: tcpstack.Connection) -> No
     cycle = getattr(conn, "live_cycle", 0)
     if getattr(conn, "h_pending_cycle", cycle) != cycle:
         if pending:
+            _live_note(conn, "cycle closed without all its blocks")
             _flush_live_blocks(conn)
             pending = conn.h_pending
         conn.h_done = set()
@@ -478,6 +489,11 @@ def _log_command_reply(payload: bytes, conn: tcpstack.Connection) -> None:
     query's answer goes to _apply_qflag instead."""
     envelope = _extract_envelope(payload)
     body = envelope.get("b") if isinstance(envelope, dict) else None
+    if isinstance(envelope, dict) and envelope.get("i") == 504 and not isinstance(body, dict) and envelope.get("e"):
+        # The dongle refused a command (error 104 when another was still pending, or
+        # one it does not know): no body, only the code. Counted for _live_report.
+        _live_note(conn, f"command refused (e={envelope.get('e')})")
+        return
     if not isinstance(body, dict) or "ct" in body or not body.get("co"):
         return
     try:
@@ -512,13 +528,18 @@ def _handle_frame(control: int, body: bytes, conn: tcpstack.Connection) -> bytes
 
     if ptype == MQTT_CONNECT:
         dtu_id = _log_connect(body)
-        if dtu_id and TELEMETRY_POLL_INTERVAL_SEC > 0:
+        if dtu_id:
             # Attributes on tcpstack.Connection itself rather than a side dict --
             # simplest way to remember which device a poll needs to be addressed
             # to without a second lookup structure to keep in sync with
             # tcpstack.CONNECTIONS' own lifecycle (creation, FIN/RST, sweep_stale).
+            # Set whatever the poll options say: the control commands and the live
+            # reads address the device through it too, and with
+            # TELEMETRY_POLL_INTERVAL_SEC at its shipped 0 they used to find no
+            # connection at all.
             conn.dtu_id = dtu_id
-            conn.next_poll_ts = time.monotonic() + TELEMETRY_POLL_INTERVAL_SEC
+            if TELEMETRY_POLL_INTERVAL_SEC > 0:
+                conn.next_poll_ts = time.monotonic() + TELEMETRY_POLL_INTERVAL_SEC
             # DIAGNOSTIC (2026-09-13): counters for the "poll stall" seen in
             # production on 2026-09-13 -- dev_rpc kept going out every 15s, cleanly
             # TCP-ACKed (no loss, no desync -- ruled out the 2026-09-12 TCP fix), but
@@ -1220,20 +1241,46 @@ def _live_interval() -> int:
     return max(LIVE_POLL_INTERVAL_SEC, LIVE_POLL_MIN_INTERVAL_SEC)
 
 
+_LIVE_REPORT_INTERVAL_SEC = 60.0
+
+
+def _live_note(conn: tcpstack.Connection, kind: str) -> None:
+    """Count one thing that went wrong with the live reads (a command the dongle
+    refused, a cycle closed without all its blocks); _live_report says it."""
+    issues = getattr(conn, "live_issues", None)
+    if issues is None:
+        issues = conn.live_issues = {}
+    issues[kind] = issues.get(kind, 0) + 1
+
+
+def _live_report(conn: tcpstack.Connection, now: float) -> None:
+    """One warning line, at most once a minute, with what _live_note counted since.
+    Since 2.6.81 a refused command (error 104) or a lost answer left no trace in the
+    log, so the lowest workable LIVE_POLL_INTERVAL_SEC could only be measured with a
+    network capture."""
+    issues = getattr(conn, "live_issues", None)
+    if not issues or now < getattr(conn, "live_report_ts", 0.0):
+        return
+    conn.live_report_ts = now + _LIVE_REPORT_INTERVAL_SEC
+    conn.live_issues = {}
+    summary = ", ".join(f"{kind} x{count}" for kind, count in sorted(issues.items()))
+    log(f"[LIVE] since the last report: {summary}", level="warning")
+
+
 def poll_due_connections() -> None:
-    """Called periodically from core.py's health_logger tick. Sends a dev_rpc
-    request to every established local-cloud connection whose interval has
-    elapsed. A no-op when TELEMETRY_POLL_INTERVAL_SEC is 0 (nothing ever sets
-    conn.next_poll_ts in that case, so the getattr below finds nothing to do)."""
-    if TELEMETRY_POLL_INTERVAL_SEC <= 0:
+    """Called every second from core.py's telemetry_poll_loop. For every
+    established local-cloud connection: sends the live read cycle when it is due,
+    and the full dev_rpc poll when its interval has elapsed. Each part is switched
+    on by its own option (LIVE_POLL_INTERVAL_SEC, TELEMETRY_POLL_INTERVAL_SEC); a
+    no-op when both are 0."""
+    live_interval = _live_interval()
+    if TELEMETRY_POLL_INTERVAL_SEC <= 0 and live_interval <= 0:
         return
     now = time.monotonic()
     for conn in list(tcpstack.CONNECTIONS.values()):
         dtu_id = getattr(conn, "dtu_id", None)
-        next_poll_ts = getattr(conn, "next_poll_ts", None)
-        if dtu_id is None or next_poll_ts is None or conn.closed:
+        if dtu_id is None or conn.closed:
             continue
-        live_interval = _live_interval()
         if live_interval > 0:
             queue = getattr(conn, "live_queue", None)
             if queue is None:
@@ -1244,6 +1291,12 @@ def poll_due_connections() -> None:
                 conn.live_cycle = cycle
                 queue.extend(_LIVE_FAST)
                 queue.append(_LIVE_SLOW[cycle % len(_LIVE_SLOW)])
+                # PI30 flag status (read only) for ECO and Programmes 22/25, which no
+                # telemetry block carries: once a minute, at the end of a cycle, so it
+                # never goes out beside another command.
+                if now >= getattr(conn, "next_qflag_ts", 0.0):
+                    conn.next_qflag_ts = now + _QFLAG_INTERVAL_SEC
+                    queue.append("QFLAG")
                 conn.h_expected = frozenset(_H_BLOCKS[c] for c in queue if c in _H_BLOCKS)
             if queue and now >= getattr(conn, "live_send_ts", 0.0):
                 command = queue.pop(0)
@@ -1256,7 +1309,10 @@ def poll_due_connections() -> None:
                     _send_control_ci(ci, conn=conn)
                 except Exception as exc:
                     log(f"[LOCAL CLOUD ERROR] {command} query failed: {exc}", level="error")
-        if now < next_poll_ts:
+        if live_interval > 0:
+            _live_report(conn, now)
+        next_poll_ts = getattr(conn, "next_poll_ts", None)
+        if TELEMETRY_POLL_INTERVAL_SEC <= 0 or next_poll_ts is None or now < next_poll_ts:
             continue
         conn.next_poll_ts = now + TELEMETRY_POLL_INTERVAL_SEC
 
@@ -1289,8 +1345,9 @@ def poll_due_connections() -> None:
             log(f"[LOCAL CLOUD ERROR] dev_rpc poll failed: {exc}", level="error")
 
         # PI30 flag status (read only) for ECO and Programmes 22/25, which no
-        # telemetry block carries. Once a minute, on the poll tick.
-        if now >= getattr(conn, "next_qflag_ts", 0.0):
+        # telemetry block carries. Once a minute, on the poll tick -- unless the live
+        # cycle is on, which sends it itself (see above).
+        if live_interval <= 0 and now >= getattr(conn, "next_qflag_ts", 0.0):
             conn.next_qflag_ts = now + _QFLAG_INTERVAL_SEC
             try:
                 _send_control_ci(build_write_ci("QFLAG", ""), conn=conn)
@@ -1303,7 +1360,17 @@ def _on_established(conn: tcpstack.Connection) -> None:
 
 
 def _on_data(conn: tcpstack.Connection) -> None:
-    frames, conn.recv_buffer = extract_mqtt_frames(conn.recv_buffer)
+    try:
+        frames, conn.recv_buffer = extract_mqtt_frames(conn.recv_buffer)
+    except ValueError as exc:
+        # An impossible length field: nothing after it can be framed, and keeping the
+        # buffer made every following packet raise the same error. The dongle opens a
+        # fresh session on its own.
+        log(f"[LOCAL CLOUD] {conn.peer_ip}:{conn.peer_port} malformed MQTT data ({exc}); closing", level="warning")
+        conn.recv_buffer = b""
+        conn.close("malformed MQTT data")
+        tcpstack.CONNECTIONS.pop((conn.local_ip, conn.local_port, conn.peer_ip, conn.peer_port), None)
+        return
     if not frames:
         return
     reply = b"".join(_handle_frame(control, body, conn) for control, body in frames)

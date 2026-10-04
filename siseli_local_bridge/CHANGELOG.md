@@ -2,6 +2,64 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.86] - 2026-10-04
+
+Result of a review of the whole bridge (backup taken first). No change to what the sensors
+publish or how they are decoded; the fixes are in the plumbing around the live reads.
+
+### Fixed
+
+- **With `TELEMETRY_POLL_INTERVAL_SEC` at its shipped 0, the live reads, the once-a-minute
+  `QFLAG` and every control command silently did nothing.** The device id a connection
+  belongs to was remembered only when the full poll was on, so the live cycle skipped the
+  connection and every switch, select and number found "no established local-cloud
+  connection". It is now remembered whatever the poll options say; the full `i=501` poll
+  still needs its own option, and `QFLAG` now rides at the end of a live cycle (one command
+  at a time) when the live reads are on, or on the poll tick as before when they are off.
+- **The energy counters lost up to 30 s at every restart or rebuild.** The state cache
+  (counters and their clocks) is written at most every 30 s, and was not written at
+  shutdown; it now is, first thing, unless nothing has been decoded yet (a good cache is
+  never replaced by an empty one).
+- **The "poll stall" diagnostic could no longer fire.** Since 2.6.80 the answers to the live
+  commands (`i=504`) arrive on the same topic as the answers to the poll (`i=502`) and were
+  counted as poll answers. Only `i=502` counts now.
+- **The stale-connection sweep iterated the live connection table** while the capture thread
+  adds and removes connections (a "dictionary changed size" error was possible); it works
+  on a copy.
+- **A malformed MQTT length field raised the same error on every following packet** and an
+  announced frame of up to 268 MB was waited for. A frame over 64 KiB or an impossible
+  length now closes that connection (the dongle reconnects by itself). The HTTP stub drops
+  a request whose headers never end or whose `Content-Length` is over 64 KiB.
+- **A stale nft table was reused as it was.** After a crash and a change of address or port,
+  the new port was never dropped. The table is now checked against the configuration and
+  recreated when it differs, and the `nft` calls have a 10 s timeout.
+- `Connection.close()` now takes the connection lock; the connection table is annotated with
+  its real 4-part key.
+
+### Added
+
+- **A `[LIVE]` warning, at most once a minute, when the dongle refused a command (error 104)
+  or a cycle was closed without all its blocks**, with counts. Since 2.6.81 neither left a
+  trace, so the lowest workable `LIVE_POLL_INTERVAL_SEC` could only be measured with a
+  network capture.
+
+### Changed
+
+- **A state group is no longer republished when its JSON is identical to what the broker last
+  accepted** (with the live reads every publish resent all seven groups, about three
+  messages a second, to say nothing had changed in most). Everything is sent again on a
+  new broker session, with `MQTT_RETAIN` off, and at least every `EXPIRE_AFTER_SEC / 3`
+  so a group that never changes still restarts Home Assistant's `expire_after` timer.
+- Tidy-up: an unused import, and the `except: pass` of the shutdown path now log at debug.
+
+### Tests and documentation
+
+- The suite is green again (it carried 30 sub-failures for weeks, which hid regressions):
+  three tests expected a lower-case device id although the code keeps the case on purpose,
+  one mock could not take keyword arguments, `BASE_ENV` lacked seven shipped options,
+  one test listed only four of the six publish outcomes, and the line anchors of
+  `docs/ARCHITECTURE.md` had drifted. `DOCS.md` now is the one published on GitHub, which
+  documents all options (the working copy had fallen behind it).
 ## [2.6.85] - 2026-10-03
 
 ### Fixed

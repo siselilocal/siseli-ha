@@ -874,25 +874,60 @@ def cleanup_stale_discovery() -> int:
     return cleared
 
 
-def publish_grouped_state(state_payload: Dict[str, object]) -> bool:
+#: What was last accepted by the broker on each group topic: (JSON text, monotonic time).
+#: Lets publish_grouped_state skip a group whose payload has not changed.
+_LAST_GROUP_PUBLISH: Dict[str, tuple] = {}
+
+
+def reset_group_publish_cache() -> None:
+    """Forget what was published, so the next publish sends every group. Called when
+    the broker connection is (re)established."""
+    _LAST_GROUP_PUBLISH.clear()
+
+
+def _group_refresh_interval() -> float:
+    """How long an unchanged group may go unsent. Home Assistant restarts a sensor's
+    expire_after timer only when a message arrives on its state topic, so a group
+    that never changes (settings, identity) must still be sent often enough to stay
+    inside it: a third of EXPIRE_AFTER_SEC, the same cadence as the heartbeat."""
+    if EXPIRE_AFTER_SEC:
+        return float(max(UPDATE_INTERVAL_SEC, EXPIRE_AFTER_SEC // 3))
+    return 600.0
+
+
+def publish_grouped_state(state_payload: Dict[str, object], force: bool = False) -> bool:
     """Publish one state topic per device group. True when every publish was accepted.
 
     The return value exists because paho does not raise when the broker is gone: a
     QoS 0 publish on a disconnected client returns MQTT_ERR_NO_CONN and the message is
     dropped. Every call site used to discard that, so the bridge reported "Published to
     HA" for payloads that reached nothing.
+
+    A group whose JSON is identical to the one the broker last accepted is not sent
+    again (with the live reads, every publish used to resend all seven groups, about
+    three messages a second, to say nothing had changed in most of them). Not skipped
+    with `force`, without MQTT_RETAIN (a Home Assistant restart would then wait for the
+    next change to see the value), or when the last send is older than
+    _group_refresh_interval().
     """
     grouped_state: Dict[str, Dict[str, object]] = {}
     for key, value in list(state_payload.items()):
         group = get_sensor_group(key)
         grouped_state.setdefault(group, {})[key] = value
 
+    now = time.monotonic()
+    refresh = _group_refresh_interval()
+    dedupe = bool(MQTT_RETAIN) and not force
     delivered = True
     for group, payload in grouped_state.items():
+        topic = state_topic_for_group(group)
+        body = json.dumps(payload)
+        if dedupe:
+            last = _LAST_GROUP_PUBLISH.get(topic)
+            if last is not None and last[0] == body and now - last[1] < refresh:
+                continue
         try:
-            result = client.publish(
-                state_topic_for_group(group), json.dumps(payload), retain=MQTT_RETAIN
-            )
+            result = client.publish(topic, body, retain=MQTT_RETAIN)
         except Exception as exc:
             # Without this the exception unwinds into parse_payload's handler and is
             # printed as [PARSER ERROR] -- a broker fault attributed to the decoder.
@@ -900,6 +935,8 @@ def publish_grouped_state(state_payload: Dict[str, object]) -> bool:
             return False
         if getattr(result, "rc", 0) != 0:
             delivered = False
+        else:
+            _LAST_GROUP_PUBLISH[topic] = (body, now)
     return delivered
 
 
@@ -932,6 +969,9 @@ def on_connect(_client, _userdata, _flags, rc, _properties=None):
             # re-armed the unreachable message and the two failures cross-contaminated.
             LAST_CONNECT_FAILURE = None
             log(f"[HA MQTT] Connected to {MQTT_HOST}:{MQTT_PORT}", level="info")
+            # A new session: whatever was published before may be gone (a broker
+            # without persistence), so the replay below must send everything.
+            reset_group_publish_cache()
             cleanup_stale_discovery()
             publish_discovery()
             if LOCAL_CLOUD_IP:

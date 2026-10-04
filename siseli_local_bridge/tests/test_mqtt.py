@@ -42,6 +42,9 @@ class _MqttTestCase(unittest.TestCase):
         # publish_discovery now re-asserts this rather than a literal True, so the
         # availability assertions must not depend on another file's cleanup.
         shared_state.AVAILABILITY_ONLINE = True
+        # What was last published is remembered per topic; a test must not inherit it.
+        mqtt_mod.reset_group_publish_cache()
+        self.addCleanup(mqtt_mod.reset_group_publish_cache)
 
         consts = patch_consts("src.siseli_local_bridge.mqtt", **TOPICS)
         consts.__enter__()
@@ -225,6 +228,63 @@ class TestPublishGroupedState(_MqttTestCase):
         self.assertFalse(self.client.last("siseli/inv1/battery/state").retain)
 
 
+class TestUnchangedGroupsAreNotRepublished(_MqttTestCase):
+    """With the live reads, every publish used to resend all seven group topics (about
+    three messages a second) to say nothing had changed in most of them."""
+
+    def _count(self, topic):
+        return sum(1 for item in self.client.published if item.topic == topic)
+
+    def test_an_identical_group_is_sent_once(self):
+        for _ in range(3):
+            mqtt_mod.publish_grouped_state({"bat_v": 53.4, "grid_v": 232.7})
+        self.assertEqual(self._count("siseli/inv1/battery/state"), 1)
+        self.assertEqual(self._count("siseli/inv1/grid/state"), 1)
+
+    def test_only_the_group_that_changed_is_sent(self):
+        mqtt_mod.publish_grouped_state({"bat_v": 53.4, "grid_v": 232.7})
+        self.client.published.clear()
+        mqtt_mod.publish_grouped_state({"bat_v": 53.5, "grid_v": 232.7})
+        self.assertEqual(self.client.topics(), ["siseli/inv1/battery/state"])
+
+    def test_force_and_a_new_session_send_everything_again(self):
+        mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+        mqtt_mod.publish_grouped_state({"bat_v": 53.4}, force=True)
+        self.assertEqual(self._count("siseli/inv1/battery/state"), 2)
+        mqtt_mod.reset_group_publish_cache()
+        mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+        self.assertEqual(self._count("siseli/inv1/battery/state"), 3)
+
+    def test_without_retain_nothing_is_skipped(self):
+        """A Home Assistant restart would otherwise wait for the next change."""
+        with patch_consts("src.siseli_local_bridge.mqtt", MQTT_RETAIN=False):
+            mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+            mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+        self.assertEqual(self._count("siseli/inv1/battery/state"), 2)
+
+    def test_an_unchanged_group_is_refreshed_before_home_assistant_would_expire_it(self):
+        with patch_consts("src.siseli_local_bridge.mqtt", EXPIRE_AFTER_SEC=1800, UPDATE_INTERVAL_SEC=2), \
+                mock.patch.object(mqtt_mod.time, "monotonic", side_effect=[0.0, 100.0, 601.0]):
+            for _ in range(3):
+                mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+        self.assertEqual(self._count("siseli/inv1/battery/state"), 2)  # at 0 s and at 601 s (a third of 1800 is 600)
+
+    def test_a_publish_the_broker_refused_is_tried_again(self):
+        self.client.publish_rc = 4
+        mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+        self.client.publish_rc = 0
+        mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+        mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+        self.assertEqual(self._count("siseli/inv1/battery/state"), 2)  # the refused one, then one accepted
+
+    def test_reconnecting_replays_the_whole_state(self):
+        shared_state.LAST_STATE.update({"bat_v": 53.4})
+        mqtt_mod.publish_grouped_state({"bat_v": 53.4})
+        self.client.published.clear()
+        mqtt_mod.on_connect(self.client, None, {}, 0)
+        self.assertEqual(self.client.json_at("siseli/inv1/battery/state"), {"bat_v": 53.4})
+
+
 class TestConnectionCallbacks(_MqttTestCase):
     def test_successful_connect_publishes_discovery(self):
         mqtt_mod.on_connect(self.client, None, {}, 0)
@@ -308,7 +368,7 @@ class TestAvailabilityAndIdentity(_MqttTestCase):
         logged. Case is preserved so working ids are unaffected."""
         from src.siseli_local_bridge.config import sanitize_device_id
 
-        self.assertEqual(sanitize_device_id("Siseli Local Inverter 1"), "siseli_local_inverter_1")
+        self.assertEqual(sanitize_device_id("Siseli Local Inverter 1"), "Siseli_Local_Inverter_1")
         self.assertEqual(sanitize_device_id("inverter#1"), "inverter_1")
         self.assertEqual(sanitize_device_id("siseli/inv1"), "siseli_inv1")
         self.assertEqual(sanitize_device_id(""), "siseli_local_inverter_1")

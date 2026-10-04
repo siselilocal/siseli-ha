@@ -35,6 +35,7 @@ in the same `nft list ruleset` output that revealed the DNAT rule in the first
 place.
 """
 
+import re
 import subprocess
 
 from .config import HTTP_STUB_PORT, LOCAL_CLOUD_IP, LOCAL_CLOUD_PORT
@@ -46,14 +47,32 @@ _CHAIN = "prerouting"
 #: bootstrap (httpstub.py) needed the same treatment as the MQTT broker once it got
 #: its own userspace responder -- see httpstub.py's module docstring.
 _PORTS = (LOCAL_CLOUD_PORT, HTTP_STUB_PORT)
+#: nft normally answers at once; a hung call must not hang the add-on's start or stop.
+_NFT_TIMEOUT_SEC = 10
 
 
 def _run(*args: str):
-    return subprocess.run(["nft", *args], capture_output=True, text=True)
+    try:
+        return subprocess.run(
+            ["nft", *args], capture_output=True, text=True, timeout=_NFT_TIMEOUT_SEC, check=False
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(["nft", *args], returncode=124, stdout="", stderr="nft timed out")
 
 
 def _table_exists() -> bool:
     return _run("list", "table", "inet", _TABLE).returncode == 0
+
+
+def _table_matches() -> bool:
+    """Whether the table that exists holds exactly the drops this configuration needs
+    (one per port, for LOCAL_CLOUD_IP). A table left by a crash under another IP or
+    port set would otherwise be kept as is, and the new port never dropped."""
+    result = _run("list", "table", "inet", _TABLE)
+    if result.returncode != 0:
+        return False
+    rules = re.findall(r"ip daddr (\S+) tcp dport (\d+) drop", result.stdout)
+    return sorted(rules) == sorted((LOCAL_CLOUD_IP, str(port)) for port in _PORTS)
 
 
 def install_local_cloud_block() -> bool:
@@ -64,8 +83,11 @@ def install_local_cloud_block() -> bool:
         return False
 
     if _table_exists():
-        log(f"[Firewall] nft table {_TABLE!r} already present ({LOCAL_CLOUD_IP}: {_PORTS})")
-        return True
+        if _table_matches():
+            log(f"[Firewall] nft table {_TABLE!r} already present ({LOCAL_CLOUD_IP}: {_PORTS})")
+            return True
+        log(f"[Firewall] nft table {_TABLE!r} present but not for {LOCAL_CLOUD_IP}: {_PORTS}; recreating", level="warning")
+        _run("delete", "table", "inet", _TABLE)
 
     steps = [
         ("add", "table", "inet", _TABLE),

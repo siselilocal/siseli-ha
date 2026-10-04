@@ -199,7 +199,8 @@ class TestDerivedTopics(unittest.TestCase):
 class TestDeviceIdSanitisation(unittest.TestCase):
     def test_invalid_characters_are_replaced(self):
         cfg = reload_config(DEVICE_ID="Siseli Local Inverter 1")
-        self.assertEqual(cfg.DEVICE_ID, "siseli_local_inverter_1")
+        # Case is kept (test_case_is_preserved): only the characters HA cannot match change.
+        self.assertEqual(cfg.DEVICE_ID, "Siseli_Local_Inverter_1")
         self.assertEqual(cfg.DEVICE_ID_RAW, "Siseli Local Inverter 1")
 
     def test_case_is_preserved(self):

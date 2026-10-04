@@ -264,14 +264,15 @@ class Connection:
         )
 
     def close(self, reason: str = "") -> None:
-        if self.closed:
-            return
-        self.closed = True
-        self._inflight.clear()
-        try:
-            self._send(TCP_FIN | TCP_ACK)
-        except Exception:
-            pass
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+            self._inflight.clear()
+            try:
+                self._send(TCP_FIN | TCP_ACK)
+            except Exception as exc:
+                log(f"[LOCAL CLOUD] FIN to {self.peer_ip}:{self.peer_port} not sent: {exc}", level="debug")
         if reason:
             log(f"[LOCAL CLOUD] closed {self.peer_ip}:{self.peer_port} ({reason})")
 
@@ -279,7 +280,8 @@ class Connection:
 ConnHandler = Callable[[Connection], None]
 DataHandler = Callable[[Connection], None]
 
-CONNECTIONS: Dict[Tuple[str, int], Connection] = {}
+#: Keyed (local_ip, local_port, peer_ip, peer_port), see handle_tcp.
+CONNECTIONS: Dict[Tuple[str, int, str, int], Connection] = {}
 
 
 def handle_tcp(
@@ -427,7 +429,9 @@ def sweep_stale(max_age_sec: int = STALE_CONNECTION_SEC) -> int:
     a FIN/RST ever arriving.
     """
     now = time.monotonic()
-    stale = [key for key, conn in CONNECTIONS.items() if now - conn.last_activity > max_age_sec]
+    # A copy: the capture thread adds and removes connections while this runs on the
+    # health thread, and iterating the live dict could raise "changed size".
+    stale = [key for key, conn in list(CONNECTIONS.items()) if now - conn.last_activity > max_age_sec]
     for key in stale:
         CONNECTIONS.pop(key, None)
     return len(stale)

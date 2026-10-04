@@ -701,7 +701,7 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
                 _, _, options = mqtt._CONTROL_SELECTS[setting]
                 self.assertIn(setting, mqtt._CONTROL_TELEMETRY_STATE)
                 # every label the parser can produce for a sent code is a select option
-                for label, key in options.items():
+                for _label, key in options.items():
                     code = fakecloud.SELECT_SETTINGS[setting]["options"][key]
                     self.assertTrue(code in ("0", "1", "2", "00", "01"), code)
                 self.assertIn(s1[setting], options)
@@ -908,7 +908,7 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
 
     def test_every_h_answer_is_identified_as_its_own_block(self):
         from src.siseli_local_bridge import fakecloud
-        for command, text in self._H_ANSWERS.items():
+        for command in self._H_ANSWERS:
             with self.subTest(command=command):
                 self.assertEqual(fakecloud._h_block_of(self._h_raw(command)), fakecloud._H_BLOCKS[command])
         self.assertEqual(len(set(fakecloud._H_BLOCKS.values())), len(fakecloud._H_BLOCKS))
@@ -1053,12 +1053,13 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         def command_of(call):
             frame = call[0][0]
             raw = base64.b64decode(json.loads(frame[frame.index(b"{"):])["b"]["ci"])
-            for known in ("QMOD", "QPIWS"):
+            for known in ("QMOD", "QPIWS", "QFLAG"):
                 if raw.startswith(known.encode()):
                     return known
             return raw.decode().rstrip("\r")
 
-        ticks = [100.0 + i for i in range(9)] + [109.5] + [110.0 + i for i in range(9)]
+        # The first cycle also carries the once-a-minute QFLAG, so it has ten commands.
+        ticks = [100.0 + i for i in range(10)] + [110.0 + i for i in range(9)]
         with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 15), \
                 mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 10), \
                 mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
@@ -1067,10 +1068,229 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
                 fakecloud.poll_due_connections()
         sent = [command_of(c) for c in conn.reply.call_args_list]
         fast = ["HBAT", "HBMS1", "HBMS2", "HBMS3", "HGRID", "HOP", "HPV", "QMOD"]
-        # One command per second, a cycle every 10 s, the slow set taking one turn each.
-        self.assertEqual(sent, fast + ["HTEMP"] + fast + ["HGEN"])
+        # One command per second, a cycle every 10 s, the slow set taking one turn each,
+        # QFLAG once a minute (so not in the second cycle).
+        self.assertEqual(sent, fast + ["HTEMP", "QFLAG"] + fast + ["HGEN"])
         # The second cycle expects the fast blocks plus COST (HGEN), nothing else.
         self.assertEqual(conn.h_expected, frozenset({"2ONL", "Yavb", "uxJp", "v09K", "WdRR", "2l0E", "Mpod", "COST"}))
+
+    def _connect_body(self, username=b"12345678901234567890"):
+        proto = b"\x00\x04MQTT\x04"
+        flags = b"\xc2"  # username + password + clean session
+        keep_alive = b"\x00\x3c"
+        client_id = b"dtu_" + username
+        parts = [client_id, username, b"secret"]
+        return proto + flags + keep_alive + b"".join(len(p).to_bytes(2, "big") + p for p in parts)
+
+    def test_commands_and_live_reads_work_with_the_full_poll_switched_off(self):
+        """TELEMETRY_POLL_INTERVAL_SEC ships at 0, and with it nothing remembered which
+        device a connection belonged to: the live reads, QFLAG and every control
+        command (no connection found) all silently did nothing."""
+        import json
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, tcpstack
+        conn = SimpleNamespace(reply=mock.Mock(), closed=False, peer_ip="x", peer_port=1)
+        with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 0), \
+                mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 10), \
+                mock.patch.object(fakecloud, "log"):
+            fakecloud._handle_frame(0x10, self._connect_body(), conn)
+            self.assertEqual(conn.dtu_id, "12345678901234567890")
+            self.assertFalse(hasattr(conn, "next_poll_ts"))  # no full poll was asked for
+            with mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True):
+                self.assertIs(fakecloud._first_established_connection(), conn)
+                ticks = [100.0 + i for i in range(10)]
+                with mock.patch.object(fakecloud.time, "monotonic", side_effect=ticks):
+                    for _ in ticks:
+                        fakecloud.poll_due_connections()
+        ids = []
+        for call in conn.reply.call_args_list:
+            frame = call[0][0]
+            ids.append(json.loads(frame[frame.index(b"{"):])["i"])
+        self.assertEqual(len(ids), 10)       # the whole first cycle went out
+        self.assertEqual(set(ids), {503})    # commands only: no i=501 poll
+
+    def test_nothing_is_sent_when_both_the_poll_and_the_live_reads_are_off(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, tcpstack
+        conn = SimpleNamespace(reply=mock.Mock(), dtu_id="1", closed=False, peer_ip="x", peer_port=1)
+        with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 0), \
+                mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 0), \
+                mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True):
+            for _ in range(5):
+                fakecloud.poll_due_connections()
+        conn.reply.assert_not_called()
+
+    def _publish_body(self, envelope):
+        import json
+        topic = b"dtu/1/pub/service/dev_rpc_reply"
+        return len(topic).to_bytes(2, "big") + topic + b"\x00" + json.dumps(envelope).encode()
+
+    def test_only_the_answers_to_the_poll_count_for_the_stall_check(self):
+        """Since 2.6.80 the answers to the live commands (i=504) arrive on the same
+        topic; counting them made 'sent > replied' impossible, so a stalled poll could
+        never be reported."""
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        conn = SimpleNamespace(poll_reply_count=0, last_reply_ts=0.0, poll_stall_logged=True)
+        command_answer = {"c": 5, "i": 504, "e": 0, "b": {"sa": "", "co": "KEFDSzkN"}}
+        poll_answer = {"c": 5, "i": 502, "e": 0, "b": {"sa": "", "ct": [{"cn": "WdRR", "co": "KDAp"}]}}
+        with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True), \
+                mock.patch.object(fakecloud, "log"):
+            fakecloud._handle_publish(0x30, self._publish_body(command_answer), conn)
+            self.assertEqual(conn.poll_reply_count, 0)
+            self.assertTrue(conn.poll_stall_logged)
+            fakecloud._handle_publish(0x30, self._publish_body(poll_answer), conn)
+        self.assertEqual(conn.poll_reply_count, 1)
+        self.assertFalse(conn.poll_stall_logged)
+
+    def test_refused_commands_and_incomplete_cycles_are_reported_once_a_minute(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        conn = SimpleNamespace(probe_last=None)
+        refused = {"c": 5, "i": 504, "e": 104}
+        with mock.patch.object(fakecloud, "log") as log:
+            for _ in range(3):
+                fakecloud._log_command_reply(self._publish_body(refused)[len(b"\x00\x1fdtu/1/pub/service/dev_rpc_reply"):], conn)
+            fakecloud._live_note(conn, "cycle closed without all its blocks")
+            fakecloud._live_report(conn, 100.0)
+            self.assertEqual(log.call_count, 1)
+            text = str(log.call_args)
+            self.assertIn("command refused (e=104) x3", text)
+            self.assertIn("cycle closed without all its blocks x1", text)
+            fakecloud._live_note(conn, "command refused (e=104)")
+            fakecloud._live_report(conn, 130.0)   # inside the minute: kept for later
+            self.assertEqual(log.call_count, 1)
+            fakecloud._live_report(conn, 161.0)
+            self.assertEqual(log.call_count, 2)
+            fakecloud._live_report(conn, 300.0)   # nothing new: silent
+            self.assertEqual(log.call_count, 2)
+
+    def test_a_malformed_mqtt_length_closes_the_connection_instead_of_failing_forever(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, tcpstack
+        key = ("l", 1883, "p", 5555)
+        conn = SimpleNamespace(recv_buffer=b"\x30\xff\xff\xff\xff\x7f", peer_ip="p", peer_port=5555,
+                               local_ip="l", local_port=1883, closed=False, close=mock.Mock())
+        with mock.patch.dict(tcpstack.CONNECTIONS, {key: conn}, clear=True), mock.patch.object(fakecloud, "log"):
+            fakecloud._on_data(conn)
+            self.assertNotIn(key, tcpstack.CONNECTIONS)
+        self.assertEqual(conn.recv_buffer, b"")
+        conn.close.assert_called_once()
+
+    def test_a_frame_announced_larger_than_any_real_one_is_refused(self):
+        from src.siseli_local_bridge import fakecloud
+        from src.siseli_local_bridge.config import MAX_MQTT_PACKET
+        frame = b"\x30" + fakecloud._encode_remaining_length(MAX_MQTT_PACKET + 1)
+        with self.assertRaises(ValueError):
+            fakecloud.extract_mqtt_frames(frame)
+        ok = b"\x30" + fakecloud._encode_remaining_length(2) + b"ab"
+        frames, rest = fakecloud.extract_mqtt_frames(ok)
+        self.assertEqual((frames, rest), ([(0x30, b"ab")], b""))
+
+    def test_the_stale_sweep_works_on_a_copy_of_the_connection_table(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import tcpstack
+        old = SimpleNamespace(last_activity=0.0)
+        new = SimpleNamespace(last_activity=990.0)
+        with mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 1): old, ("a", 1, "b", 2): new}, clear=True), \
+                mock.patch.object(tcpstack.time, "monotonic", return_value=1000.0):
+            self.assertEqual(tcpstack.sweep_stale(300), 1)
+            self.assertEqual(list(tcpstack.CONNECTIONS), [("a", 1, "b", 2)])
+
+    def test_the_http_stub_drops_a_request_it_would_otherwise_wait_for_forever(self):
+        from unittest import mock
+        from src.siseli_local_bridge import httpstub
+        with mock.patch.object(httpstub, "log"):
+            self.assertEqual(httpstub._extract_request(b"A" * 70000), (None, b""))
+            huge = b"POST /x HTTP/1.1\r\nContent-Length: 100000\r\n\r\n"
+            self.assertEqual(httpstub._extract_request(huge), (None, b""))
+        request, rest = httpstub._extract_request(b"GET /dtu/servers/mqtt HTTP/1.1\r\nHost: x\r\n\r\n")
+        self.assertEqual((request["method"], request["path"], rest), ("GET", "/dtu/servers/mqtt", b""))
+
+    def test_the_firewall_recreates_a_table_left_for_other_ports(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import firewall
+
+        calls = []
+        stale = "table inet siseli_local_cloud {\n chain prerouting {\n  ip daddr 192.168.1.60 tcp dport 1883 drop\n }\n}\n"
+
+        def fake_run(*args):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout=stale if args[0] == "list" else "", stderr="")
+
+        with mock.patch.object(firewall, "LOCAL_CLOUD_IP", "192.168.1.60"), \
+                mock.patch.object(firewall, "_PORTS", (1883, 80)), \
+                mock.patch.object(firewall, "_run", side_effect=fake_run), \
+                mock.patch.object(firewall, "log"):
+            self.assertTrue(firewall.install_local_cloud_block())
+        verbs = [c[0] for c in calls]
+        self.assertIn("delete", verbs)                 # the stale table went away
+        self.assertEqual(verbs.count("add"), 4)        # table, chain, two rules
+
+    def test_the_firewall_keeps_a_table_that_already_matches(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import firewall
+        good = ("table inet siseli_local_cloud {\n\tchain prerouting {\n\t\tip daddr 192.168.1.60 tcp dport 1883 drop\n"
+                "\t\tip daddr 192.168.1.60 tcp dport 80 drop\n\t}\n}\n")
+        calls = []
+
+        def fake_run(*args):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout=good, stderr="")
+
+        with mock.patch.object(firewall, "LOCAL_CLOUD_IP", "192.168.1.60"), \
+                mock.patch.object(firewall, "_PORTS", (1883, 80)), \
+                mock.patch.object(firewall, "_run", side_effect=fake_run), \
+                mock.patch.object(firewall, "log"):
+            self.assertTrue(firewall.install_local_cloud_block())
+        self.assertNotIn("delete", [c[0] for c in calls])
+        self.assertNotIn("add", [c[0] for c in calls])
+
+    def test_the_state_cache_is_written_at_shutdown_whatever_the_throttle_says(self):
+        import json
+        import os
+        import tempfile
+        from unittest import mock
+        from src.siseli_local_bridge import parsers, state as shared_state
+        from tests.helpers import isolated_state
+        with isolated_state(), tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "state.json")
+            shared_state.LAST_STATE.update({"c_generation_energy_kwh": 12.5})
+            with mock.patch.object(parsers, "STATE_CACHE_FILE", path), \
+                    mock.patch.object(parsers, "LAST_CACHE_WRITE_TS", parsers.time.monotonic()):
+                self.assertFalse(parsers._write_state_cache(shared_state.snapshot_state()))  # throttled
+                self.assertFalse(os.path.exists(path))
+                self.assertTrue(parsers.flush_state_cache())                               # not at shutdown
+            with open(path) as handle:
+                self.assertEqual(json.load(handle)["c_generation_energy_kwh"], 12.5)
+            shared_state.LAST_STATE.clear()
+            with mock.patch.object(parsers, "STATE_CACHE_FILE", path):
+                self.assertFalse(parsers.flush_state_cache())                              # nothing decoded yet
+            with open(path) as handle:
+                self.assertEqual(json.load(handle)["c_generation_energy_kwh"], 12.5)       # good cache kept
+
+    def test_shutdown_saves_the_state_before_the_slow_steps(self):
+        from unittest import mock
+        from src.siseli_local_bridge import core, state as shared_state
+        order = []
+        with mock.patch.object(shared_state, "RUNNING", True), \
+                mock.patch.object(core, "sniffer", None), \
+                mock.patch.object(core, "flush_state_cache", side_effect=lambda: order.append("cache") or True), \
+                mock.patch.object(core, "restore_arp", side_effect=lambda: order.append("arp")), \
+                mock.patch.object(core, "teardown_local_cloud_block"), \
+                mock.patch.object(core, "publish_availability"), \
+                mock.patch.object(core, "client"), \
+                mock.patch.object(core, "log"):
+            core.shutdown()
+        self.assertEqual(order, ["cache", "arp"])
 
     def test_the_cell_summary_is_computed_because_cells_and_capacities_share_a_payload(self):
         """2.6.81-82 read HBMS2 (capacities) every cycle and HBMS3 (cells) one cycle in six,
@@ -1755,9 +1975,12 @@ class TestPublishOutcomeIsReportedHonestly(unittest.TestCase):
     def test_every_outcome_has_a_label(self):
         outcomes = set(parser_module.PUBLISH_OUTCOMES)
         self.assertEqual(
-            outcomes, {"sent", "throttled", "broker-unreachable", "no-broker-yet"}
+            outcomes,
+            {"sent", "throttled", "broker-unreachable", "no-broker-yet", "flushed", "flush-unreachable"},
         )
         self.assertEqual(parser_module.PUBLISH_OUTCOMES["sent"], "Published to HA")
+        for label in parser_module.PUBLISH_OUTCOMES.values():
+            self.assertTrue(label.strip(), "every outcome needs a readable label")
 
 
 class TestPublishThrottle(unittest.TestCase):
