@@ -237,7 +237,8 @@ FR_NAMES: Dict[str, str] = {
     "Grid-Tie Current": "Courant d'injection réseau",
     "Max Charging Current": "Courant de charge max",
     "Second Output Cut-off SOC": "SOC de coupure 2e sortie",
-    "Second Output Restore Voltage": "Tension de rétablissement 2e sortie",
+    "Second Output Discharge Time": "Durée de décharge 2e sortie",
+    "Second Output Restore Delay": "Délai de rétablissement 2e sortie",
     "Second Output Restore SOC": "SOC de rétablissement 2e sortie",
 }
 

@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.90] - 2026-10-04
+
+### Fixed
+
+- **Programme 65 (second-output discharge time) was read from the wrong place.** The
+  "Second Output Discharge Time" sensor and number read `HEEP2` token 6, which stays at 0
+  whatever the setting. The value is in the last three digits of the **last** token, which
+  also holds the Programme 64 capacity in its first two (`20975` = 20 % and 975 min, what the
+  vendor app showed; `50000` = 50 % and 0 = disabled). `PDDCGT` writes were already accepted
+  (`(ACK9`); only the read-back was wrong.
+## [2.6.89] - 2026-10-04
+
+### Added
+
+- **Second-output discharge time and restore delay as Home Assistant numbers** (manual
+  Programmes 65 and 66): "Second Output Discharge Time" (`PDDCGT`, 0-990 min in steps of 5,
+  0 = off) and "Second Output Restore Delay" (`PDDLYT`, 0-60 min). Both channels were read
+  off the wire in captures of the vendor app; the inverter NAKs a discharge time that is not a
+  multiple of 5 (the app steps by 1). Read back from `HEEP2`.
+
+### Removed
+
+- The "Second Output Restore Voltage" number added in 2.6.87 (Programme 63, `PDSRV`): its channel
+  was never confirmed, and the voltage settings (61 and 63) are refused by the inverter with a
+  BMS lithium battery (every `PDSDV` write for Programme 61 got `(NAKss`). Programmes 62 and 64
+  (the percentages) are the ones that apply. Home Assistant keeps the orphan entity until it
+  is deleted from Settings.
 ## [2.6.88] - 2026-10-04
 
 ### Added

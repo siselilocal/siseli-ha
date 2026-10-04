@@ -2073,10 +2073,9 @@ class SolarParser:
             maybe_return_batt_v = SolarParser._to_float(vals[5])
             if maybe_return_batt_v is not None:
                 state["return_to_battery_mode_voltage_v"] = round(maybe_return_batt_v, 1)
-        if len(vals) >= 7:
-            maybe_discharge_time = SolarParser._format_min_token(vals[6])
-            if maybe_discharge_time is not None:
-                state["second_output_discharge_time"] = maybe_discharge_time
+        # Token 6 is not Programme 65: it read "0" while the vendor app showed 975 min
+        # (2026-09-12, "20975" in the last token). The discharge time is read from the
+        # last token below.
         if len(vals) >= 8:
             eq_v = SolarParser._to_float(vals[7])
             if eq_v is not None:
@@ -2137,6 +2136,11 @@ class SolarParser:
                     cap_val = int(cap_raw)
             if cap_val is not None:
                 state["second_output_battery_capacity"] = cap_val
+            # The same token carries Programme 65 in its last three digits: the
+            # captures read "20975" and "25975" (capacity 20/25 %, discharge time 975
+            # min, what the app showed) and "50000" (50 %, 0 = disabled).
+            if len(cap_raw) == 5 and cap_raw.isdigit():
+                state["second_output_discharge_time"] = f"{int(cap_raw[2:])} min"
 
         # Settings / mode block -> 93VQ
         vals = parsed.get("93VQ", ("", []))[1]

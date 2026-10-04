@@ -312,11 +312,17 @@ _CONTROL_NUMBERS = {
     "equalization_voltage": ("Equalization Voltage", "mdi:battery-sync"),
     "grid_tie_current": ("Grid-Tie Current", "mdi:transmission-tower-export"),  # Programme 56
     "max_charging_current": ("Max Charging Current", "mdi:battery-charging-high"),  # Programme 02
-    # Programmes 62-64 (unverified channels, see fakecloud.NUMBER_SETTINGS)
+    # Programmes 62, 64, 65, 66 (see fakecloud.NUMBER_SETTINGS)
     "second_output_cutoff_soc": ("Second Output Cut-off SOC", "mdi:battery-arrow-down"),
-    "second_output_restore_voltage": ("Second Output Restore Voltage", "mdi:battery-arrow-up-outline"),
     "second_output_restore_soc": ("Second Output Restore SOC", "mdi:battery-arrow-up"),
+    "second_output_discharge_time": ("Second Output Discharge Time", "mdi:timer-sand"),
+    "second_output_delay_time": ("Second Output Restore Delay", "mdi:timer-outline"),
 }
+
+
+#: Number controls that shipped once and were withdrawn: their retained discovery
+#: config is cleared on every discovery so Home Assistant drops the entity.
+_WITHDRAWN_CONTROL_NUMBERS = ("second_output_restore_voltage",)  # 2.6.87, Programme 63
 
 
 #: setting name -> real telemetry read-back, for the handful of controls whose
@@ -412,20 +418,24 @@ _CONTROL_TELEMETRY_STATE = {
         "group": get_sensor_group("maximum_total_charging_current_a"),
         "value_template": "{{ value_json.maximum_total_charging_current_a }}",
     },
-    # Programmes 62-64: dHrK tokens 2, 15 and 16 (62 and 64 confirmed by a write).
+    # Programmes 62, 64, 65, 66: dHrK tokens 2, 16, 6 and 13 (62 and 64 confirmed by a write).
     "second_output_cutoff_soc": {
         "group": get_sensor_group("parallel_mode_turn_off_soc"),
         "value_template": "{{ value_json.parallel_mode_turn_off_soc }}",
-    },
-    "second_output_restore_voltage": {
-        "group": get_sensor_group("second_output_battery_voltage_v"),
-        "value_template": "{{ value_json.second_output_battery_voltage_v }}",
     },
     "second_output_restore_soc": {
         "group": get_sensor_group("second_output_battery_capacity"),
         "value_template": "{{ value_json.second_output_battery_capacity }}",
     },
-    # 93VQ token 0, aux pack digit 2 and config pack digit 3: each moved to the
+    # The sensors hold "10 min"; a number entity needs the bare figure.
+    "second_output_discharge_time": {
+        "group": get_sensor_group("second_output_discharge_time"),
+        "value_template": "{{ value_json.second_output_discharge_time | replace(' min', '') | int }}",
+    },
+    "second_output_delay_time": {
+        "group": get_sensor_group("second_delay_time"),
+        "value_template": "{{ value_json.second_delay_time | replace(' min', '') | int }}",
+    },    # 93VQ token 0, aux pack digit 2 and config pack digit 3: each moved to the
     # exact value sent (POP01, PCP02, PVENGUSE01) on 2026-09-26 and matched the
     # user's settings before the factory reset.
     "output_source_priority": {
@@ -646,6 +656,9 @@ def publish_control_discovery() -> None:
         if telemetry:
             payload["value_template"] = telemetry["value_template"]
         client.publish(topic, json.dumps(payload), retain=True)
+
+    for setting in _WITHDRAWN_CONTROL_NUMBERS:
+        client.publish(f"{MQTT_DISCOVERY_PREFIX}/number/{DEVICE_ID}/{setting}/config", "", retain=True)
 
     for setting, (label, icon, _) in _CONTROL_HOUR_SELECTS.items():
         topic = f"{MQTT_DISCOVERY_PREFIX}/select/{DEVICE_ID}/{setting}/config"

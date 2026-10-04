@@ -513,7 +513,11 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             mqtt_module.publish_sensor_discovery("ac_charging_start_time")
             mqtt_module.publish_control_discovery()
             payloads = {json.loads(c[0][1])["unique_id"]: json.loads(c[0][1])
-                        for c in client.publish.call_args_list if c[0][0].endswith("/config")}
+                        for c in client.publish.call_args_list if c[0][0].endswith("/config") and c[0][1]}
+            cleared = [c[0][0] for c in client.publish.call_args_list
+                       if c[0][0].endswith("/config") and not c[0][1]]
+        # a withdrawn control has its retained discovery config emptied, not republished
+        self.assertEqual(cleared, [f"homeassistant/number/{mqtt_module.DEVICE_ID}/second_output_restore_voltage/config"])
         sensor = payloads[f"{mqtt_module.DEVICE_ID}_diagnostics_ac_charging_start_time"]
         self.assertEqual(sensor["name"], "Siseli Heure de début de charge secteur")
         self.assertEqual(sensor["default_entity_id"],
@@ -1481,27 +1485,51 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         entry = mqtt._CONTROL_TELEMETRY_STATE["grid_tie_current"]
         self.assertIn("grid_connected_current_a", entry["value_template"])
 
-    def test_second_output_thresholds_build_the_unverified_frames(self):
-        """Programmes 62-64: channels from SoT-RWB1-Server-Emulator, not yet
-        captured on this inverter. Only the frame shape and ranges are pinned."""
+    def test_second_output_thresholds_build_the_frames(self):
+        """Programmes 62, 64 (proven by a write from Home Assistant, 2026-10-04),
+        65 and 66 (channels seen in captures of the vendor app). Programmes 61
+        and 63 (voltages) are deliberately not offered."""
         import base64
         from unittest import mock
         from src.siseli_local_bridge import fakecloud, mqtt
         sent = []
         with mock.patch.object(fakecloud, "_send_control_ci", side_effect=lambda ci: sent.append(ci) or True):
             self.assertTrue(fakecloud.send_control_number("second_output_cutoff_soc", 20))
-            self.assertTrue(fakecloud.send_control_number("second_output_restore_voltage", 52.0))
             self.assertTrue(fakecloud.send_control_number("second_output_restore_soc", 50))
+            self.assertTrue(fakecloud.send_control_number("second_output_discharge_time", 975))
+            self.assertTrue(fakecloud.send_control_number("second_output_discharge_time", 0))
+            self.assertTrue(fakecloud.send_control_number("second_output_delay_time", 10))
             for name, bad in (("second_output_cutoff_soc", 22), ("second_output_cutoff_soc", 100),
-                              ("second_output_restore_voltage", 47.9), ("second_output_restore_voltage", 52.05),
-                              ("second_output_restore_soc", 4), ("second_output_restore_soc", 105)):
+                              ("second_output_restore_soc", 21), ("second_output_restore_soc", 105),
+                              ("second_output_discharge_time", 974), ("second_output_discharge_time", 995),
+                              ("second_output_delay_time", 61), ("second_output_delay_time", -1)):
                 self.assertFalse(fakecloud.send_control_number(name, bad), (name, bad))
         frames = [base64.b64decode(ci) for ci in sent]
-        self.assertEqual([f[:-3] for f in frames], [b"PDSDS020", b"PDSRV52.0", b"PDSRS050"])
-        for name in ("second_output_cutoff_soc", "second_output_restore_voltage", "second_output_restore_soc"):
+        self.assertEqual([f[:-3] for f in frames],
+                         [b"PDSDS020", b"PDSRS050", b"PDDCGT0975", b"PDDCGT0000", b"PDDLYT010"])
+        for name in ("second_output_cutoff_soc", "second_output_restore_soc",
+                     "second_output_discharge_time", "second_output_delay_time"):
             self.assertIn(name, mqtt._CONTROL_NUMBERS)
             self.assertIn(name, mqtt._CONTROL_TELEMETRY_STATE)
-
+        self.assertNotIn("second_output_restore_voltage", fakecloud.NUMBER_SETTINGS)
+        self.assertIn("second_output_restore_voltage", mqtt._WITHDRAWN_CONTROL_NUMBERS)
+        # the number entities read a bare figure from the "N min" sensors
+        template = mqtt._CONTROL_TELEMETRY_STATE["second_output_delay_time"]["value_template"]
+        self.assertIn("replace(' min', '') | int", template)
+    def test_second_output_discharge_time_is_the_last_digits_of_the_last_dhrk_token(self):
+        """Programme 65 lives in the last three digits of dHrK's last token:
+        "20975" = capacity 20 % + 975 min (what the vendor app showed on
+        2026-09-12), "50000" = 50 % + 0 (disabled). Token 6 never moved."""
+        def block(last):
+            return ("(0 044.0 015 044.0 044.0 048.0 0 056.0 060 120 030 0000 0000 05 0000 52.0 "
+                    + last + "\r").encode()
+        state = SolarParser._try_ascii_schema({"dHrK": block("20975")})
+        self.assertEqual(state["second_output_discharge_time"], "975 min")
+        self.assertEqual(state["second_output_battery_capacity"], 20)
+        state = SolarParser._try_ascii_schema({"dHrK": block("50000")})
+        self.assertEqual(state["second_output_discharge_time"], "0 min")
+        self.assertEqual(state["second_output_battery_capacity"], 50)
+        self.assertEqual(SolarParser._try_ascii_schema({"dHrK": block("55005")})["second_output_discharge_time"], "5 min")
     def test_labels_are_the_select_options(self):
         """grid_working_range's HA select reads this key back verbatim."""
         from src.siseli_local_bridge import mqtt
