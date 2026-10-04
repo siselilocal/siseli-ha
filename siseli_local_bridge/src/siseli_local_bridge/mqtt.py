@@ -312,6 +312,10 @@ _CONTROL_NUMBERS = {
     "equalization_voltage": ("Equalization Voltage", "mdi:battery-sync"),
     "grid_tie_current": ("Grid-Tie Current", "mdi:transmission-tower-export"),  # Programme 56
     "max_charging_current": ("Max Charging Current", "mdi:battery-charging-high"),  # Programme 02
+    # Programmes 62-64 (unverified channels, see fakecloud.NUMBER_SETTINGS)
+    "second_output_cutoff_soc": ("Second Output Cut-off SOC", "mdi:battery-arrow-down"),
+    "second_output_restore_voltage": ("Second Output Restore Voltage", "mdi:battery-arrow-up-outline"),
+    "second_output_restore_soc": ("Second Output Restore SOC", "mdi:battery-arrow-up"),
 }
 
 
@@ -407,6 +411,19 @@ _CONTROL_TELEMETRY_STATE = {
     "max_charging_current": {
         "group": get_sensor_group("maximum_total_charging_current_a"),
         "value_template": "{{ value_json.maximum_total_charging_current_a }}",
+    },
+    # Programmes 62-64: dHrK tokens 2, 15 and 16 (62 and 64 confirmed by a write).
+    "second_output_cutoff_soc": {
+        "group": get_sensor_group("parallel_mode_turn_off_soc"),
+        "value_template": "{{ value_json.parallel_mode_turn_off_soc }}",
+    },
+    "second_output_restore_voltage": {
+        "group": get_sensor_group("second_output_battery_voltage_v"),
+        "value_template": "{{ value_json.second_output_battery_voltage_v }}",
+    },
+    "second_output_restore_soc": {
+        "group": get_sensor_group("second_output_battery_capacity"),
+        "value_template": "{{ value_json.second_output_battery_capacity }}",
     },
     # 93VQ token 0, aux pack digit 2 and config pack digit 3: each moved to the
     # exact value sent (POP01, PCP02, PVENGUSE01) on 2026-09-26 and matched the

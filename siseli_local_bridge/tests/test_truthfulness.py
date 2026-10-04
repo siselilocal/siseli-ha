@@ -1481,6 +1481,27 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         entry = mqtt._CONTROL_TELEMETRY_STATE["grid_tie_current"]
         self.assertIn("grid_connected_current_a", entry["value_template"])
 
+    def test_second_output_thresholds_build_the_unverified_frames(self):
+        """Programmes 62-64: channels from SoT-RWB1-Server-Emulator, not yet
+        captured on this inverter. Only the frame shape and ranges are pinned."""
+        import base64
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt
+        sent = []
+        with mock.patch.object(fakecloud, "_send_control_ci", side_effect=lambda ci: sent.append(ci) or True):
+            self.assertTrue(fakecloud.send_control_number("second_output_cutoff_soc", 20))
+            self.assertTrue(fakecloud.send_control_number("second_output_restore_voltage", 52.0))
+            self.assertTrue(fakecloud.send_control_number("second_output_restore_soc", 50))
+            for name, bad in (("second_output_cutoff_soc", 22), ("second_output_cutoff_soc", 100),
+                              ("second_output_restore_voltage", 47.9), ("second_output_restore_voltage", 52.05),
+                              ("second_output_restore_soc", 4), ("second_output_restore_soc", 105)):
+                self.assertFalse(fakecloud.send_control_number(name, bad), (name, bad))
+        frames = [base64.b64decode(ci) for ci in sent]
+        self.assertEqual([f[:-3] for f in frames], [b"PDSDS020", b"PDSRV52.0", b"PDSRS050"])
+        for name in ("second_output_cutoff_soc", "second_output_restore_voltage", "second_output_restore_soc"):
+            self.assertIn(name, mqtt._CONTROL_NUMBERS)
+            self.assertIn(name, mqtt._CONTROL_TELEMETRY_STATE)
+
     def test_labels_are_the_select_options(self):
         """grid_working_range's HA select reads this key back verbatim."""
         from src.siseli_local_bridge import mqtt

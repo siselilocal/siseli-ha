@@ -130,6 +130,10 @@ DEVICE_NAME = os.getenv("DEVICE_NAME", "Siseli Local Inverter 1")
 MODEL_NAME = os.getenv("MODEL_NAME", DEVICE_NAME)
 MANUFACTURER = os.getenv("MANUFACTURER", "Siseli Compatible")
 ENTITY_PREFIX = os.getenv("ENTITY_PREFIX", "").strip()
+# The add-on option cannot be left empty (Supervisor puts the default back), so
+# "-" or "none" is how a user asks for no prefix at all.
+if ENTITY_PREFIX.lower() in ("-", "none"):
+    ENTITY_PREFIX = ""
 # Language of the entity names shown in Home Assistant (i18n.py). Names only:
 # unique_ids, entity_ids and state values stay English.
 LANGUAGE = os.getenv("LANGUAGE", "en").strip().lower() or "en"

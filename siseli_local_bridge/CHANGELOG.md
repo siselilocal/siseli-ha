@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.88] - 2026-10-04
+
+### Added
+
+- **`ENTITY_PREFIX` can now be turned off**: set it to `-` (or `none`) to show entity names
+  without a prefix. Leaving the option empty never worked, because Supervisor puts the default
+  `Siseli` back. Entity IDs already created do not change; only the displayed names do.
+
+## [2.6.87] - 2026-10-04
+
+### Added
+
+- **Second-output thresholds as Home Assistant numbers** (manual Programmes 62 and 64, plus 63):
+  "Second Output Cut-off SOC" (`PDSDS`, 5-95 %, steps of 5), "Second Output Restore SOC"
+  (`PDSRS`, 5-100 %, steps of 5) and "Second Output Restore Voltage" (`PDSRV`, 48.0-58.0 V,
+  0.1 V), each read back from the matching `HEEP2` token. The channel names come from
+  SoT-RWB1-Server-Emulator. **Programmes 62 and 64 are confirmed on this inverter** (written from
+  Home Assistant, answered `(ACK9`, read back about a minute later). **Programme 63 is untested.**
+  Programmes 61, 65 and 66 are not offered yet (no confirmed channel / unit).
+
 ## [2.6.86] - 2026-10-04
 
 Result of a review of the whole bridge (backup taken first). No change to what the sensors

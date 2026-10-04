@@ -1028,6 +1028,24 @@ NUMBER_SETTINGS = {
     "max_charging_current": {
         "channel": "MNCHGC", "min": 10, "max": 150, "step": 10, "unit": "A",
     },
+    # Programmes 62-64, second (dual) output cut-off / restore thresholds.
+    # NOT captured from the vendor app: channel names, formats and steps come
+    # from SoT-RWB1-Server-Emulator (PDSDS, PDSRV, PDSRS); 62 and 64 PROVEN on
+    # this inverter 2026-10-04 (ACK + read-back), 63 untested. Test with dual output off, then
+    # check that the matching dHrK read-back moves to the value sent.
+    # 62: dHrK token 2 (also follows Programme 38 by itself).
+    "second_output_cutoff_soc": {
+        "channel": "PDSDS", "min": 5, "max": 95, "step": 5,
+    },
+    # 63: dHrK token 15. The external source lists 22.0-29.0 V (24 V units);
+    # 48.0-58.0 V is this 48 V model's range, the manual default being 52 V.
+    "second_output_restore_voltage": {
+        "channel": "PDSRV", "min": 48.0, "max": 58.0, "step": 0.1, "format": "{:04.1f}", "unit": "V",
+    },
+    # 64: dHrK token 16 (first two digits), manual default 50 %.
+    "second_output_restore_soc": {
+        "channel": "PDSRS", "min": 5, "max": 100, "step": 5,
+    },
 }
 
 

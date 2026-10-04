@@ -109,7 +109,7 @@ in step 3 above.
 | `DEVICE_ID` | `siseli_local_inverter_1` | Letters, digits, `_` and `-` only. Changing it renames every entity |
 | `DEVICE_NAME` | `Siseli Local Inverter 1` | Shown in Home Assistant |
 | `MODEL_NAME` / `MANUFACTURER` | `Siseli Local Inverter 1` / `Siseli Compatible` | Cosmetic |
-| `ENTITY_PREFIX` | `Siseli` | Prefixed to every entity name |
+| `ENTITY_PREFIX` | `Siseli` | Prefixed to every entity name. Set `-` (or `none`) for no prefix: an empty value is replaced by the default |
 | `LANGUAGE` | `en` | Language of the entity names: `en` (English) or `fr` (French). Names only; entity IDs do not change |
 | `INVERTER_COUNT` | `1` | Scales the calculated power sensors — see below |
 | `BATTERY_COUNT` | `1` | |
