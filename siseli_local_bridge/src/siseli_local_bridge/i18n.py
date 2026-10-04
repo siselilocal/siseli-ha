@@ -237,6 +237,10 @@ FR_NAMES: Dict[str, str] = {
     "Grid-Tie Current": "Courant d'injection réseau",
     "Max Charging Current": "Courant de charge max",
     "Second Output Cut-off SOC": "SOC de coupure 2e sortie",
+    "Warning: Confirm Restore Settings": "Attention : confirmer la restauration (écrase les réglages)",
+    "Save Inverter Settings": "Sauvegarder les réglages onduleur",
+    "Restore Inverter Settings": "Restaurer les réglages onduleur",
+    "Settings Backup Status": "État sauvegarde des réglages",
     "Second Output Discharge Time": "Durée de décharge 2e sortie",
     "Second Output Restore Delay": "Délai de rétablissement 2e sortie",
     "Second Output Restore SOC": "SOC de rétablissement 2e sortie",
@@ -251,6 +255,7 @@ FR_GROUP_TITLES: Dict[str, str] = {
     "Load": "Sortie",
     "PV": "PV",
     "Diagnostics": "Diagnostic",
+    "Settings Backup": "Sauvegarde/Restauration",
 }
 
 

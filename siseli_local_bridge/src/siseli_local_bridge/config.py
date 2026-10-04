@@ -5,6 +5,13 @@ import os
 STATE_CACHE_FILE = "/data/state.json"
 # Kept out of state.json, which is merged wholesale into LAST_STATE at boot.
 DISCOVERY_MARKER_FILE = "/data/discovery_state.json"
+SETTINGS_DEVICE_MARKER_FILE = os.getenv("SETTINGS_DEVICE_MARKER_FILE", "/data/settings_device_migrated")
+# Saved inverter settings: the add-on's own config folder when it is mapped (visible in
+# Home Assistant's file editor as /addon_configs/<slug>/), else the private /data.
+SETTINGS_BACKUP_FILE = os.getenv(
+    "SETTINGS_BACKUP_FILE",
+    "/config/inverter_settings.yaml" if os.path.isdir("/config") else "/data/inverter_settings.yaml",
+)
 
 INVERTER_IP = os.getenv("INVERTER_IP", "192.168.1.139")
 ROUTER_IP = os.getenv("ROUTER_IP", "192.168.1.1")

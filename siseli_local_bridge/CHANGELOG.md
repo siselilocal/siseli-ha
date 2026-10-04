@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.91] - 2026-10-04
+
+### Added
+
+- **Save and restore the inverter's settings.** Two buttons, **Save Inverter Settings** and
+  **Restore Inverter Settings**, and a **Settings Backup Status** sensor. Save writes every setting,
+  as Home Assistant shows it, to `inverter_settings.yaml` in the add-on's configuration folder
+  (new `map: addon_config` in `config.yaml`; the previous file is kept as `.bak`). Restore sends
+  every value that differs from what the inverter reports, in a safe order (Programme 38 before
+  62, the second output last), one command every three seconds, then compares the read-back 90
+  seconds later. The file is flat, easy to edit by hand, and the battery type is saved for
+  information but never restored (changing it can cut the inverter's output). The four entities (both buttons, the confirmation switch, the status sensor) sit together on a **Settings Backup** device ("Sauvegarde/Restauration" in French). Home Assistant keeps an entity on the device where it first appeared, so the bridge clears and republishes these four entities once (marker file `settings_device_migrated`) to bring them over. A restore only starts after the **Warning: Confirm Restore Settings** switch is ticked (it clears itself after each press of the button, or after five minutes). A restore is refused (and stops if the connection drops) when the dongle is not connected to the local cloud: the commands have nothing to travel on.
 ## [2.6.90] - 2026-10-04
 
 ### Fixed

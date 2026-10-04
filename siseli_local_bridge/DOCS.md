@@ -370,6 +370,19 @@ with their manual programme numbers. Two cautions:
   **BMS Communication Normal** reads `No`, because the reported state of charge is then
   the inverter's own estimate.
 
+**Saving and restoring the settings** (all on the **Settings Backup** device, "Sauvegarde/Restauration" in French). The **Save Inverter Settings** button writes every
+setting, as Home Assistant shows it, to `inverter_settings.yaml` in the add-on's own
+configuration folder (`/addon_configs/<slug>/` in Home Assistant's file editor; the previous file
+is kept as `.bak`). **Restore Inverter Settings** reads that file back and sends every value that
+differs from what the inverter reports, one command every three seconds, then the bridge checks the
+read-back 90 seconds later; the **Settings Backup Status** sensor tells how it went. The file is
+flat and meant to be edited by hand (delete a line to leave that setting alone). The battery type is
+saved for information but **never restored**.
+
+**Restore overwrites the inverter's settings**, so it only starts after you have ticked the
+**Warning: Confirm Restore Settings** switch (next to the buttons). The switch clears itself
+after each press of Restore, or after five minutes, so every restore is a deliberate two steps.
+
 Controls only work in this mode: they are sent on the local connection, which
 pass-through mode does not have.
 

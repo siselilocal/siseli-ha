@@ -1110,6 +1110,20 @@ def send_control_number(setting: str, value: float) -> bool:
     return ok
 
 
+def save_inverter_settings() -> None:
+    """Button "Save Inverter Settings": write the settings file (settings_backup)."""
+    from . import settings_backup
+
+    settings_backup.save_settings()
+
+
+def restore_inverter_settings() -> None:
+    """Button "Restore Inverter Settings": put the saved settings back (settings_backup)."""
+    from . import settings_backup
+
+    settings_backup.restore_settings()
+
+
 def send_control_select(setting: str, option: str) -> bool:
     """Write one option of a SELECT_SETTINGS entry. Same success signal caveat
     as send_control_switch: the dongle's dev_rpc_reply carries no field this

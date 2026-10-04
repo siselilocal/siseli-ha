@@ -2297,5 +2297,192 @@ class TestBatteryStatusMatchesReportedPower(_ParserTestCase):
         self.assertNotIn("[ENERGY SOURCE DISAGREEMENT]", tags)
 
 
+class TestSettingsBackup(unittest.TestCase):
+    """The YAML file of settings and its Save / Restore buttons (settings_backup.py)."""
+
+    STATE = {
+        "maximum_total_charging_current_a": 60, "return_to_mains_mode_voltage_v": 44.0,
+        "return_to_battery_mode_voltage_v": 48.0, "battery_equalization_voltage_v": 56.0,
+        "bms_low_power_soc": 10, "bms_returns_to_mains_mode_soc": 20,
+        "bms_returns_to_battery_mode_soc": 25, "bms_auto_start_soc_after_low": 25,
+        "grid_connected_current_a": 4, "parallel_mode_turn_off_soc": 30,
+        "second_output_battery_capacity": 50, "second_output_discharge_time": "0 min",
+        "second_delay_time": "0 min", "output_source_priority": "Solar+Battery First (SBU)",
+        "max_utility_charge_current_a": 2, "mains_input_range": "UPS", "output_set_voltage": 240,
+        "grid_regulation_mode": "Mode 2", "charger_priority": "Solar Only (OSO)",
+        "solar_supply_priority": "LBU", "ac_charging_start_time": "12:00", "ac_charging_stop_time": "13:00",
+        "dual_output_mode": "On", "buzzer_function": "Off", "battery_type": "Growatt (GRO)",
+    }
+
+    def _state(self, **changes):
+        return {**self.STATE, **changes}
+
+    def test_displayed_values_are_what_home_assistant_shows(self):
+        from src.siseli_local_bridge import settings_backup as sb
+        snap = self._state()
+        self.assertEqual(sb.displayed_value("max_charging_current", snap), "60")
+        self.assertEqual(sb.displayed_value("output_voltage", snap), "240 V")
+        self.assertEqual(sb.displayed_value("max_utility_charge_current", snap), "2 A")
+        self.assertEqual(sb.displayed_value("second_output_delay_time", snap), "0")
+        self.assertEqual(sb.displayed_value("dual_output", snap), "on")
+        self.assertEqual(sb.displayed_value("ac_charging_start_time", snap), "12:00")
+        self.assertEqual(sb.displayed_value("buzzer", snap), "off")
+        self.assertTrue(sb.displayed_value("grid_regulation_mode", snap).startswith("Mode 2 GEn"))
+        self.assertIsNone(sb.displayed_value("eco", snap))  # not reported yet
+
+    def test_the_file_round_trips_and_keeps_the_battery_type_read_only(self):
+        from src.siseli_local_bridge import settings_backup as sb
+        values = sb._current_values(self._state())
+        text = sb.render_file(values, "2026-10-04 11:00:00")
+        self.assertIn('battery_type: "Growatt (GRO)"', text)
+        parsed, saved_at = sb.parse_file(text)
+        self.assertEqual(saved_at, "2026-10-04 11:00:00")
+        self.assertNotIn("battery_type", parsed)
+        self.assertEqual(parsed["max_charging_current"], "60")
+        self.assertEqual(parsed["dual_output"], "on")
+        self.assertEqual((parsed["ac_charging_start_time"], parsed["ac_charging_stop_time"]), ("12:00", "13:00"))
+        self.assertEqual(parsed["output_source_priority"], "Solar+Battery First (SBU)")
+        self.assertEqual({k: v for k, v in values.items() if k != "battery_type"}, parsed)
+
+    def test_restore_sends_only_what_differs_in_a_safe_order(self):
+        from src.siseli_local_bridge import settings_backup as sb
+        saved = {"bms_lock_machine_soc": "10", "second_output_cutoff_soc": "35", "dual_output": "off",
+                 "second_output_delay_time": "5", "grid_regulation_mode": "Mode 1 whatever",
+                 "buzzer": "off", "battery_type": "AGM", "output_voltage": "999 V"}
+        to_send, skipped = sb.plan_restore(saved, self._state())
+        names = [s for s, _, _ in to_send]
+        # unchanged ones are left alone, the second output goes last, battery_type is never offered
+        self.assertEqual(names, ["second_output_cutoff_soc", "second_output_delay_time",
+                                 "grid_regulation_mode", "dual_output"])
+        self.assertEqual(dict((s, p) for s, _, p in to_send)["dual_output"], "OFF")
+        self.assertTrue(dict((s, p) for s, _, p in to_send)["grid_regulation_mode"].startswith("Mode 1 IND"))
+        self.assertIn("battery_type (not a restorable setting)", skipped)
+        self.assertTrue(any(item.startswith("output_voltage") for item in skipped))
+
+    def test_restore_is_refused_without_a_local_cloud_connection(self):
+        import os
+        import tempfile
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, mqtt, settings_backup as sb
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "inverter_settings.yaml")
+            open(path, "w", encoding="utf-8").write('numbers:\n  second_output_cutoff_soc: "35"\n')
+            sent = []
+            with mock.patch.object(fakecloud, "_first_established_connection", return_value=None), \
+                    mock.patch.object(sb._state, "snapshot_state", return_value=self._state()), \
+                    mock.patch.object(mqtt, "client"), \
+                    mock.patch.object(mqtt, "_handle_control_message", side_effect=lambda t, p: sent.append(t)):
+                sb.set_confirmation(True)
+                self.assertFalse(sb.restore_settings(path, wait=True))
+            self.assertEqual(sent, [])
+            self.assertIn("local cloud", sb._status_text)
+    def test_restore_needs_the_confirmation_box_and_clears_it(self):
+        import os
+        import tempfile
+        from unittest import mock
+        from src.siseli_local_bridge import mqtt, settings_backup as sb
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "inverter_settings.yaml")
+            open(path, "w", encoding="utf-8").write('numbers:\n  second_output_cutoff_soc: "35"\n')
+            sent = []
+            with mock.patch.object(sb._state, "snapshot_state", return_value=self._state()), \
+                    mock.patch.object(mqtt, "client") as client, \
+                    mock.patch.object(mqtt, "_handle_control_message", side_effect=lambda t, p: sent.append(t)), \
+                    mock.patch.object(sb, "_connected", return_value=True), \
+                    mock.patch.object(sb, "RESTORE_SPACING_SEC", 0), mock.patch.object(sb, "VERIFY_DELAY_SEC", 0):
+                sb._CONFIRMED_AT = None
+                self.assertFalse(sb.restore_settings(path, wait=True))   # box not ticked: nothing sent
+                self.assertEqual(sent, [])
+                self.assertIn("tick", sb._status_text)
+                sb.set_confirmation(True)
+                self.assertTrue(sb.restore_settings(path, wait=True))    # ticked: goes through
+                self.assertEqual(len(sent), 1)
+                self.assertFalse(sb.restore_settings(path, wait=True))   # the box cleared itself
+                self.assertEqual(len(sent), 1)
+                sb.set_confirmation(True)
+                with mock.patch.object(sb.time, "monotonic", return_value=sb._CONFIRMED_AT + sb.CONFIRM_WINDOW_SEC + 1):
+                    self.assertFalse(sb.restore_settings(path, wait=True))   # ticked too long ago
+                self.assertEqual(len(sent), 1)
+                states = [c[0][1] for c in client.publish.call_args_list if c[0][0].endswith("confirm_restore_settings/state")]
+                self.assertEqual(states[-1], "OFF")
+        # the switch is wired to its topic and named as a warning in both languages
+        self.assertTrue(mqtt.control_command_topic("confirm_restore_settings").endswith("/confirm_restore_settings/set"))
+        from src.siseli_local_bridge.i18n import FR_NAMES
+        self.assertIn("Warning: Confirm Restore Settings", FR_NAMES)
+    def test_the_four_entities_share_one_device_of_their_own(self):
+        """Save, Restore, the confirmation switch and the status sensor sit together on
+        a "Settings Backup" device, as visible entities (no Configuration/Diagnostic)."""
+        import json
+        from unittest import mock
+        from src.siseli_local_bridge import mqtt
+        with mock.patch.object(mqtt, "client") as client:
+            mqtt.publish_control_discovery()
+            published = {c[0][0]: json.loads(c[0][1]) for c in client.publish.call_args_list
+                         if c[0][0].endswith("/config") and c[0][1]}
+        wanted = ("button/%s/save_inverter_settings", "button/%s/restore_inverter_settings",
+                  "switch/%s/confirm_restore_settings", "sensor/%s/settings_backup_status")
+        device_ids = set()
+        for suffix in wanted:
+            payload = published[f"homeassistant/{suffix % mqtt.DEVICE_ID}/config"]
+            device_ids.add(tuple(payload["device"]["identifiers"]))
+            self.assertNotIn("entity_category", payload, suffix)
+        self.assertEqual(device_ids, {(f"{mqtt.DEVICE_ID}_settings_backup",)})
+        with mock.patch.object(mqtt, "LANGUAGE", "fr"):
+            self.assertTrue(mqtt.settings_device_info()["name"].endswith("Sauvegarde/Restauration"))
+        # the other buttons stay on the main device, under Configuration
+        sync = published[f"homeassistant/button/{mqtt.DEVICE_ID}/sync_inverter_clock/config"]
+        self.assertEqual(sync["entity_category"], "config")
+        self.assertEqual(sync["device"]["identifiers"], [mqtt.DEVICE_ID])
+    def test_the_entities_are_moved_to_their_device_once(self):
+        import os
+        import tempfile
+        from unittest import mock
+        from src.siseli_local_bridge import settings_backup as sb
+        with tempfile.TemporaryDirectory() as folder:
+            marker = os.path.join(folder, "settings_device_migrated")
+            client, again = mock.MagicMock(), mock.MagicMock()
+            with mock.patch.object(sb, "SETTINGS_DEVICE_MARKER_FILE", marker), \
+                    mock.patch.object(sb, "MIGRATION_ALLOWED_IN_TESTS", True), \
+                    mock.patch.object(sb, "MIGRATION_DELAY_SEC", 0):
+                self.assertTrue(sb.migrate_to_own_device_once(client, again))
+                for thread in __import__("threading").enumerate():
+                    if thread.name == "settings-device-move":
+                        thread.join(5)
+                cleared = [c[0][0] for c in client.publish.call_args_list if c[0][1] == ""]
+                self.assertEqual(len(cleared), 4)
+                self.assertTrue(any("save_inverter_settings" in t for t in cleared))
+                again.assert_called_once()
+                self.assertTrue(os.path.exists(marker))
+                self.assertFalse(sb.migrate_to_own_device_once(client, again))   # once only
+            # no /data (tests, Windows): nothing to do
+            with mock.patch.object(sb, "SETTINGS_DEVICE_MARKER_FILE", os.path.join(folder, "nope", "marker")), \
+                    mock.patch.object(sb, "MIGRATION_ALLOWED_IN_TESTS", True):
+                self.assertFalse(sb.migrate_to_own_device_once(client, again))
+    def test_save_and_restore_go_through_the_control_handlers(self):
+        import os
+        import tempfile
+        from unittest import mock
+        from src.siseli_local_bridge import mqtt, settings_backup as sb
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "inverter_settings.yaml")
+            with mock.patch.object(sb._state, "snapshot_state", return_value=self._state()), \
+                    mock.patch.object(mqtt, "client"):
+                self.assertGreater(sb.save_settings(path), 20)
+                self.assertTrue(sb.save_settings(path))
+                self.assertTrue(os.path.exists(path + ".bak"))
+            text = open(path, encoding="utf-8").read().replace('second_output_cutoff_soc: "30"',
+                                                               'second_output_cutoff_soc: "35"')
+            open(path, "w", encoding="utf-8").write(text)
+            sent = []
+            with mock.patch.object(sb._state, "snapshot_state", return_value=self._state()), \
+                    mock.patch.object(mqtt, "client"), \
+                    mock.patch.object(mqtt, "_handle_control_message", side_effect=lambda t, p: sent.append((t, p))), \
+                    mock.patch.object(sb, "_connected", return_value=True), \
+                    mock.patch.object(sb, "RESTORE_SPACING_SEC", 0), mock.patch.object(sb, "VERIFY_DELAY_SEC", 0):
+                sb.set_confirmation(True)
+                self.assertTrue(sb.restore_settings(path, wait=True))
+            self.assertEqual(sent, [(mqtt.control_command_topic("second_output_cutoff_soc"), b"35")])
+        self.assertIn("save_inverter_settings", mqtt._CONTROL_BUTTONS)
+        self.assertIn("restore_inverter_settings", mqtt._CONTROL_BUTTONS)
 if __name__ == "__main__":
     unittest.main()

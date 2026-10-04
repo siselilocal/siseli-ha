@@ -120,6 +120,23 @@ def device_info(group: str) -> Dict[str, object]:
     }
 
 
+#: Entities of the settings file (settings_backup.py) live on a device of their own, so
+#: the two buttons, the confirmation switch and the status sensor sit together on one
+#: page, as visible controls rather than under Configuration / Diagnostic.
+_SETTINGS_DEVICE_BUTTONS = ("save_inverter_settings", "restore_inverter_settings")
+
+
+def settings_device_info() -> Dict[str, object]:
+    title = translate_group_title("Settings Backup", LANGUAGE)
+    return {
+        "identifiers": [f"{DEVICE_ID}_settings_backup"],
+        "name": f"{DEVICE_NAME} {title}".strip(),
+        "manufacturer": MANUFACTURER,
+        "model": MODEL_NAME,
+        "via_device": DEVICE_ID,
+    }
+
+
 def create_mqtt_client() -> mqtt.Client:
     try:
         c = mqtt.Client(
@@ -210,6 +227,10 @@ _CONTROL_BUTTONS = {
     "refresh_telemetry": ("Refresh Telemetry", "mdi:refresh", "send_manual_refresh"),
     # Programmes 51-55 in one go; see fakecloud.send_clock_sync.
     "sync_inverter_clock": ("Sync Inverter Clock", "mdi:clock-check-outline", "send_clock_sync"),
+    # Settings file (settings_backup.py): the values Home Assistant shows, to a YAML
+    # file and back. battery_type is never written back.
+    "save_inverter_settings": ("Save Inverter Settings", "mdi:content-save-outline", "save_inverter_settings"),
+    "restore_inverter_settings": ("Restore Inverter Settings", "mdi:backup-restore", "restore_inverter_settings"),
 }
 #: setting name -> (label, icon, {HA-displayed option -> fakecloud.SELECT_SETTINGS
 #: option key}). Unlike _CONTROL_SWITCHES/_CONTROL_BUTTONS, this dispatches a
@@ -435,7 +456,8 @@ _CONTROL_TELEMETRY_STATE = {
     "second_output_delay_time": {
         "group": get_sensor_group("second_delay_time"),
         "value_template": "{{ value_json.second_delay_time | replace(' min', '') | int }}",
-    },    # 93VQ token 0, aux pack digit 2 and config pack digit 3: each moved to the
+    },
+    # 93VQ token 0, aux pack digit 2 and config pack digit 3: each moved to the
     # exact value sent (POP01, PCP02, PVENGUSE01) on 2026-09-26 and matched the
     # user's settings before the factory reset.
     "output_source_priority": {
@@ -587,6 +609,7 @@ def publish_control_discovery() -> None:
 
     for suffix, (label, icon, _) in _CONTROL_BUTTONS.items():
         topic = f"{MQTT_DISCOVERY_PREFIX}/button/{DEVICE_ID}/{suffix}/config"
+        on_settings_device = suffix in _SETTINGS_DEVICE_BUTTONS
         payload = {
             "name": display_sensor_name(label),
             "unique_id": f"{DEVICE_ID}_{suffix}",
@@ -596,11 +619,24 @@ def publish_control_discovery() -> None:
             "availability_topic": AVAILABILITY_TOPIC,
             "payload_available": "online",
             "payload_not_available": "offline",
-            "device": device_info("main"),
+            "device": settings_device_info() if on_settings_device else device_info("main"),
             "icon": icon,
             "entity_category": "config",
         }
+        if on_settings_device:
+            payload.pop("entity_category")
         client.publish(topic, json.dumps(payload), retain=True)
+
+    from . import settings_backup
+
+    settings_backup.publish_status_discovery(
+        client, settings_device_info(), display_sensor_name("Settings Backup Status"),
+        default_entity_id("sensor", "main", "Settings Backup Status"), AVAILABILITY_TOPIC,
+    )
+    settings_backup.publish_confirm_discovery(
+        client, settings_device_info(), display_sensor_name("Warning: Confirm Restore Settings"),
+        default_entity_id("switch", "main", "Warning: Confirm Restore Settings"), AVAILABILITY_TOPIC,
+    )
 
     for setting, (label, icon, options) in _CONTROL_SELECTS.items():
         topic = f"{MQTT_DISCOVERY_PREFIX}/select/{DEVICE_ID}/{setting}/config"
@@ -681,6 +717,9 @@ def publish_control_discovery() -> None:
         client.publish(topic, json.dumps(payload), retain=True)
 
 
+    # The settings entities first appeared on the main device: move them, once.
+    settings_backup.migrate_to_own_device_once(client, publish_control_discovery)
+
 def subscribe_control_topics() -> None:
     """Re-subscribes every reconnect (on_connect calls this) -- a broker does not
     remember a clean-session client's subscriptions across a disconnect."""
@@ -730,6 +769,13 @@ def _handle_control_message(topic: str, raw_payload: bytes) -> None:
         # select on the real value.
         which = _CONTROL_HOUR_SELECTS[hour_setting][2]
         fakecloud.send_ac_charging_window(**{f"{which}_hour": int(payload[:2])})
+        return
+
+    if topic == control_command_topic("confirm_restore_settings"):
+        from . import settings_backup
+
+        if payload.upper() in ("ON", "OFF"):
+            settings_backup.set_confirmation(payload.upper() == "ON")
         return
 
     fn_name = _CONTROL_BUTTON_TOPICS.get(topic)
