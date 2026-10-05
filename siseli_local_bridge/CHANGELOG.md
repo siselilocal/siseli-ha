@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.93] - 2026-10-05
+
+### Changed
+
+- **French sensor names show the programme number too**, for every sensor that reads a
+  front-panel setting back: "Fonction buzzer (prog 18)", "Heure de l'onduleur (h:min)
+  (prog 51-52)", "Intervalle d'égalisation (prog 35)"… (`i18n.SENSOR_PROGRAMMES`). Measurements
+  and flags are unchanged, as are entity_ids and English names.
+- The unproven setting sensors get a number too, guessed from their names so the value can be
+  compared with the front panel: Output Set Frequency (09), Strong / Float Charging Voltage
+  (26 / 27), Low Electric Lock Voltage (29), Battery Equalization Mode (30), BMS Communication
+  Control Function (37), Grid Connection Function (44), CT Function Switch (57). A mismatch with
+  the screen means the sensor reads something else.
+
 ## [2.6.92] - 2026-10-05
 
 ### Changed

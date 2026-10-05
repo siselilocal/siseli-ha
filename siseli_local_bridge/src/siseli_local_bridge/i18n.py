@@ -121,7 +121,7 @@ FR_NAMES: Dict[str, str] = {
     "Buzzer Function": "Fonction buzzer",
     "Charging Light Status": "Voyant de charge",
     "Charging Main Switch": "Interrupteur principal de charge",
-    "Grid Regulation Mode": "Mode réseau (prog 50)",
+    "Grid Regulation Mode": "Mode réseau",
     "CT Function Switch": "Fonction CT",
     "DC Rectification Temperature": "Température du redresseur DC",
     "Dual Output Mode": "Mode sortie double",
@@ -322,13 +322,74 @@ CONTROL_PROGRAMMES: Dict[str, str] = {
 }
 
 
+#: Sensor key -> programme number(s), same idea, for the sensors that read a
+#: front-panel setting back (the read-backs in mqtt._CONTROL_TELEMETRY_STATE,
+#: plus the decoded settings without a command: 33-35, 44, 61, 63, the clock).
+SENSOR_PROGRAMMES: Dict[str, str] = {
+    "output_source_priority": "01",
+    "maximum_total_charging_current_a": "02",
+    "mains_input_range": "03",
+    "battery_type": "05",
+    "overload_restart_function": "06",
+    "over_temperature_restart_function": "07",
+    "power_saving_function": "08",
+    "output_set_voltage": "10",
+    "max_utility_charge_current_a": "11",
+    "return_to_mains_mode_voltage_v": "12",
+    "return_to_battery_mode_voltage_v": "13",
+    "charger_priority": "16",
+    "buzzer_function": "18",
+    "display_return_to_homepage": "19",
+    "lcd_back_lighting": "20",
+    "primary_source_interrupt_alarm": "22",
+    "overload_to_bypass_function": "23",
+    "fault_code_record": "25",
+    "battery_equalization_voltage_v": "31",
+    "equalization_time": "33",
+    "equalization_overtime": "34",
+    "equalization_interval": "35",
+    "bms_low_power_soc": "38",
+    "bms_returns_to_mains_mode_soc": "39",
+    "bms_returns_to_battery_mode_soc": "40",
+    "bms_auto_start_soc_after_low": "41",
+    "solar_supply_priority": "43",
+    "solar_feed_to_grid": "44",
+    "ac_charging_start_time": "46",
+    "ac_charging_stop_time": "47",
+    "grid_regulation_mode": "50",
+    "system_time_hm": "51-52",
+    "system_time_ymd": "53-55",
+    "grid_connected_current_a": "56",
+    "dual_output_mode": "60",
+    "parallel_mode_turn_off_voltage_v": "61",
+    "parallel_mode_turn_off_soc": "62",
+    "second_output_battery_voltage_v": "63",
+    "second_output_battery_capacity": "64",
+    "second_output_discharge_time": "65",
+    "second_delay_time": "66",
+    # Programme guessed from the name only, NOT checked against the front
+    # panel: the number is shown so the value can be compared with the screen.
+    "output_set_frequency": "09",
+    "strong_charging_voltage_v": "26",
+    "float_charging_voltage_v": "27",
+    "low_electric_lock_voltage_v": "29",
+    "battery_equalization_mode": "30",
+    "bms_communication_control_function": "37",
+    "grid_connection_function": "44",
+    "ct_function_switch": "57",
+}
+
+
+def with_programme(name: str, programme: str, language: str) -> str:
+    """`name` (already translated) with " (prog NN)" appended, in French only."""
+    if language != "fr" or not programme or "(prog " in name:
+        return name
+    return f"{name} (prog {programme})"
+
+
 def control_name(setting: str, name: str, language: str) -> str:
     """The translated control name, with its programme number in French."""
-    translated = translate_name(name, language)
-    programme = CONTROL_PROGRAMMES.get(setting)
-    if language != "fr" or not programme or "(prog " in translated:
-        return translated
-    return f"{translated} (prog {programme})"
+    return with_programme(translate_name(name, language), CONTROL_PROGRAMMES.get(setting, ""), language)
 
 
 def translate_name(name: str, language: str) -> str:

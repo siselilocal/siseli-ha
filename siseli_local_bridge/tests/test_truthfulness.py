@@ -519,7 +519,7 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         # a withdrawn control has its retained discovery config emptied, not republished
         self.assertEqual(cleared, [f"homeassistant/number/{mqtt_module.DEVICE_ID}/second_output_restore_voltage/config"])
         sensor = payloads[f"{mqtt_module.DEVICE_ID}_diagnostics_ac_charging_start_time"]
-        self.assertEqual(sensor["name"], "Siseli Heure de début de charge secteur")
+        self.assertEqual(sensor["name"], "Siseli Heure de début de charge secteur (prog 46)")
         self.assertEqual(sensor["default_entity_id"],
                          "sensor.siseli_local_inverter_1_diagnostics_siseli_ac_charging_start_time")
         hour_select = payloads[f"{mqtt_module.DEVICE_ID}_ac_charging_start_time"]
@@ -1463,6 +1463,20 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
                              "Actualiser les données")
         with mock.patch.object(mqtt, "LANGUAGE", "en"), mock.patch.object(mqtt, "ENTITY_PREFIX", None):
             self.assertEqual(mqtt.display_control_name("buzzer", "Buzzer"), "Buzzer")
+
+    def test_french_sensor_names_show_the_programme(self):
+        from unittest import mock
+        from src.siseli_local_bridge import i18n, mqtt
+        from src.siseli_local_bridge.sensors import SENSORS
+        self.assertEqual(sorted(set(i18n.SENSOR_PROGRAMMES) - set(SENSORS)), [])
+        with mock.patch.object(mqtt, "LANGUAGE", "fr"), mock.patch.object(mqtt, "ENTITY_PREFIX", None):
+            self.assertEqual(mqtt.display_sensor_name("Settings - Buzzer Function", "18"),
+                             "Fonction buzzer (prog 18)")
+            self.assertEqual(mqtt.display_sensor_name("Settings - Grid Regulation Mode", "50"),
+                             "Mode réseau (prog 50)")
+            self.assertEqual(mqtt.display_sensor_name("Battery Status - Battery Voltage"), "Tension batterie")
+        with mock.patch.object(mqtt, "LANGUAGE", "en"), mock.patch.object(mqtt, "ENTITY_PREFIX", None):
+            self.assertEqual(mqtt.display_sensor_name("Settings - Buzzer Function", "18"), "Buzzer Function")
 
     def test_max_charging_current_sends_the_captured_frames(self):
         """Programme 02, 2026-09-27: the vendor app's MNCHGC frames; the

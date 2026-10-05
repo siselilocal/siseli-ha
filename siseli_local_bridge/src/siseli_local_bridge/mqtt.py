@@ -7,7 +7,15 @@ import paho.mqtt.client as mqtt
 
 from . import state as _state
 from .config import *
-from .i18n import GRID_MODES, control_name, grid_mode_label, translate_group_title, translate_name
+from .i18n import (
+    GRID_MODES,
+    SENSOR_PROGRAMMES,
+    control_name,
+    grid_mode_label,
+    translate_group_title,
+    translate_name,
+    with_programme,
+)
 from .loggers import log, log_error_always
 from .sensors import (
     SENSOR_GROUP_TITLES,
@@ -34,8 +42,9 @@ def _trim_section_prefix(name: str) -> str:
     return name
 
 
-def display_sensor_name(base_name: str) -> str:
-    trimmed = translate_name(_trim_section_prefix(base_name), LANGUAGE)
+def display_sensor_name(base_name: str, programme: str = "") -> str:
+    """`programme`: the front-panel programme the sensor reads, shown in French."""
+    trimmed = with_programme(translate_name(_trim_section_prefix(base_name), LANGUAGE), programme, LANGUAGE)
     return f"{ENTITY_PREFIX} {trimmed}".strip() if ENTITY_PREFIX else trimmed
 
 
@@ -173,7 +182,7 @@ def publish_sensor_discovery(key: str) -> None:
     group_device_id = device_id_for_group(group)
     topic = f"{MQTT_DISCOVERY_PREFIX}/sensor/{group_device_id}/{key}/config"
     payload = {
-        "name": display_sensor_name(str(meta["name"])),
+        "name": display_sensor_name(str(meta["name"]), SENSOR_PROGRAMMES.get(key, "")),
         "unique_id": f"{group_device_id}_{key}",
         "default_entity_id": default_entity_id("sensor", group, str(meta["name"])),
         "state_topic": state_topic_for_group(group),
