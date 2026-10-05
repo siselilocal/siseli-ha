@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.92] - 2026-10-05
+
+### Changed
+
+- **French control names show the inverter's programme number**, as "Grid Regulation Mode"
+  already did: "Buzzer (prog 18)", "Sortie double (prog 60)", "Synchroniser l'horloge de
+  l'onduleur (prog 51-55)"… (`i18n.CONTROL_PROGRAMMES`). Only the displayed name changes;
+  entity_ids stay as they are. English names are unchanged.
+
 ## [2.6.91] - 2026-10-04
 
 ### Added

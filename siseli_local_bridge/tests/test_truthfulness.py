@@ -1447,6 +1447,23 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         with mock.patch.object(mqtt, "LANGUAGE", "en"), mock.patch.object(mqtt, "ENTITY_PREFIX", "Siseli"):
             self.assertEqual(mqtt.display_sensor_name("Battery Status - Battery Voltage"), "Siseli Battery Voltage")
 
+    def test_french_control_names_show_the_programme(self):
+        """Every control with a front-panel programme shows it in French, once."""
+        from unittest import mock
+        from src.siseli_local_bridge import i18n, mqtt
+        tables = (mqtt._CONTROL_SWITCHES, mqtt._CONTROL_BUTTONS, mqtt._CONTROL_SELECTS,
+                  mqtt._CONTROL_NUMBERS, mqtt._CONTROL_HOUR_SELECTS)
+        settings = {setting for table in tables for setting in table}
+        self.assertEqual(sorted(set(i18n.CONTROL_PROGRAMMES) - settings), [])
+        with mock.patch.object(mqtt, "LANGUAGE", "fr"), mock.patch.object(mqtt, "ENTITY_PREFIX", None):
+            self.assertEqual(mqtt.display_control_name("buzzer", "Buzzer"), "Buzzer (prog 18)")
+            self.assertEqual(mqtt.display_control_name("grid_regulation_mode", "Grid Regulation Mode"),
+                             "Mode réseau (prog 50)")
+            self.assertEqual(mqtt.display_control_name("refresh_telemetry", "Refresh Telemetry"),
+                             "Actualiser les données")
+        with mock.patch.object(mqtt, "LANGUAGE", "en"), mock.patch.object(mqtt, "ENTITY_PREFIX", None):
+            self.assertEqual(mqtt.display_control_name("buzzer", "Buzzer"), "Buzzer")
+
     def test_max_charging_current_sends_the_captured_frames(self):
         """Programme 02, 2026-09-27: the vendor app's MNCHGC frames; the
         inverter NAKed anything off the 10 A grid."""

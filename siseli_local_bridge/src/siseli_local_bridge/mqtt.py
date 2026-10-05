@@ -7,7 +7,7 @@ import paho.mqtt.client as mqtt
 
 from . import state as _state
 from .config import *
-from .i18n import GRID_MODES, grid_mode_label, translate_group_title, translate_name
+from .i18n import GRID_MODES, control_name, grid_mode_label, translate_group_title, translate_name
 from .loggers import log, log_error_always
 from .sensors import (
     SENSOR_GROUP_TITLES,
@@ -37,6 +37,12 @@ def _trim_section_prefix(name: str) -> str:
 def display_sensor_name(base_name: str) -> str:
     trimmed = translate_name(_trim_section_prefix(base_name), LANGUAGE)
     return f"{ENTITY_PREFIX} {trimmed}".strip() if ENTITY_PREFIX else trimmed
+
+
+def display_control_name(setting: str, label: str) -> str:
+    """display_sensor_name for a control: adds its programme number in French."""
+    name = control_name(setting, label, LANGUAGE)
+    return f"{ENTITY_PREFIX} {name}".strip() if ENTITY_PREFIX else name
 
 
 def default_entity_id(domain: str, group: str, base_name: str) -> str:
@@ -584,7 +590,7 @@ def publish_control_discovery() -> None:
         topic = f"{MQTT_DISCOVERY_PREFIX}/switch/{DEVICE_ID}/{setting}/config"
         telemetry = _CONTROL_TELEMETRY_STATE.get(setting)
         payload = {
-            "name": display_sensor_name(label),
+            "name": display_control_name(setting, label),
             "unique_id": f"{DEVICE_ID}_{setting}",
             "default_entity_id": default_entity_id("switch", "main", label),
             "command_topic": control_command_topic(setting),
@@ -611,7 +617,7 @@ def publish_control_discovery() -> None:
         topic = f"{MQTT_DISCOVERY_PREFIX}/button/{DEVICE_ID}/{suffix}/config"
         on_settings_device = suffix in _SETTINGS_DEVICE_BUTTONS
         payload = {
-            "name": display_sensor_name(label),
+            "name": display_control_name(suffix, label),
             "unique_id": f"{DEVICE_ID}_{suffix}",
             "default_entity_id": default_entity_id("button", "main", label),
             "command_topic": control_command_topic(suffix),
@@ -642,7 +648,7 @@ def publish_control_discovery() -> None:
         topic = f"{MQTT_DISCOVERY_PREFIX}/select/{DEVICE_ID}/{setting}/config"
         telemetry = _CONTROL_TELEMETRY_STATE.get(setting)
         payload = {
-            "name": display_sensor_name(label),
+            "name": display_control_name(setting, label),
             "unique_id": f"{DEVICE_ID}_{setting}",
             "default_entity_id": default_entity_id("select", "main", label),
             "command_topic": control_command_topic(setting),
@@ -669,7 +675,7 @@ def publish_control_discovery() -> None:
         topic = f"{MQTT_DISCOVERY_PREFIX}/number/{DEVICE_ID}/{setting}/config"
         telemetry = _CONTROL_TELEMETRY_STATE.get(setting)
         payload = {
-            "name": display_sensor_name(label),
+            "name": display_control_name(setting, label),
             "unique_id": f"{DEVICE_ID}_{setting}",
             "default_entity_id": default_entity_id("number", "main", label),
             "command_topic": control_command_topic(setting),
@@ -699,7 +705,7 @@ def publish_control_discovery() -> None:
     for setting, (label, icon, _) in _CONTROL_HOUR_SELECTS.items():
         topic = f"{MQTT_DISCOVERY_PREFIX}/select/{DEVICE_ID}/{setting}/config"
         payload = {
-            "name": display_sensor_name(label),
+            "name": display_control_name(setting, label),
             "unique_id": f"{DEVICE_ID}_{setting}",
             "default_entity_id": default_entity_id("select", "main", label),
             "command_topic": control_command_topic(setting),

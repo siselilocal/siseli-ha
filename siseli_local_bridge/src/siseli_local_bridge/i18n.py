@@ -282,6 +282,55 @@ def grid_mode_label(mode: int, language: str) -> str:
     return f"Mode {mode} {code} ({volts} VAC, {hertz} Hz)"
 
 
+#: Control setting -> front-panel programme number(s), shown after the French
+#: control name ("Buzzer (prog 18)") so a value can be checked on the inverter.
+CONTROL_PROGRAMMES: Dict[str, str] = {
+    "output_source_priority": "01",
+    "max_charging_current": "02",
+    "grid_working_range": "03",
+    "battery_type": "05",
+    "overload_restart": "06",
+    "over_temperature_restart": "07",
+    "eco": "08",
+    "output_voltage": "10",
+    "max_utility_charge_current": "11",
+    "back_to_grid_voltage": "12",
+    "back_to_battery_voltage": "13",
+    "charger_priority": "16",
+    "buzzer": "18",
+    "display_return_to_homepage": "19",
+    "backlight": "20",
+    "primary_source_interrupt_alarm": "22",
+    "overload_bypass": "23",
+    "fault_code_record": "25",
+    "equalization_voltage": "31",
+    "bms_lock_machine_soc": "38",
+    "bms_restore_mains_charging_soc": "39",
+    "bms_restore_battery_discharging_soc": "40",
+    "bms_inverter_startup_soc": "41",
+    "solar_supply_priority": "43",
+    "ac_charging_start_time": "46",
+    "ac_charging_stop_time": "47",
+    "grid_regulation_mode": "50",
+    "sync_inverter_clock": "51-55",
+    "grid_tie_current": "56",
+    "dual_output": "60",
+    "second_output_cutoff_soc": "62",
+    "second_output_restore_soc": "64",
+    "second_output_discharge_time": "65",
+    "second_output_delay_time": "66",
+}
+
+
+def control_name(setting: str, name: str, language: str) -> str:
+    """The translated control name, with its programme number in French."""
+    translated = translate_name(name, language)
+    programme = CONTROL_PROGRAMMES.get(setting)
+    if language != "fr" or not programme or "(prog " in translated:
+        return translated
+    return f"{translated} (prog {programme})"
+
+
 def translate_name(name: str, language: str) -> str:
     """The displayed name in `language`; English (unchanged) if unknown."""
     if language == "fr":
