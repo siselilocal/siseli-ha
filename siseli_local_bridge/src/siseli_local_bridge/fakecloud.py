@@ -294,12 +294,19 @@ def _handle_publish(control: int, body: bytes, conn: tcpstack.Connection) -> byt
             envelope = _extract_envelope(payload)
             if isinstance(envelope, dict) and envelope.get("i") == 504:
                 token = envelope.get("t")
-                _live_answered(conn, str(token) if token is not None else None)
+                token = str(token) if token is not None else None
+                # The round the answered command was sent in (2.7.00: rounds overlap,
+                # the next one starting while the last answers of this one are due).
+                conn.answer_cycle = getattr(conn, "live_token_cycle", {}).pop(token, None)
+                _live_answered(conn, token)
             if isinstance(envelope, dict) and envelope.get("i") == 502:
                 conn.poll_reply_count = getattr(conn, "poll_reply_count", 0) + 1
                 conn.last_reply_ts = time.monotonic()
                 conn.poll_stall_logged = False
-            _log_command_reply(payload, conn)
+            try:
+                _log_command_reply(payload, conn)
+            finally:
+                conn.answer_cycle = None
 
     return _build_ack_publish(topic, payload)
 
@@ -359,11 +366,18 @@ def _collect_live_block(block: str, raw: bytes, conn: tcpstack.Connection) -> No
     decoded together when the round (cycle) is complete, and the power group of
     _LIVE_GROUPS, decoded as soon as it is complete. When a reply went missing the
     leftovers are decoded as soon as the next cycle's first answer shows the cycle has
-    moved on."""
+    moved on.
+
+    Since 2.7.00 the next round starts while the last answers of the previous one are
+    still due: an answer belongs to the round its command was sent in (conn.answer_cycle,
+    from the echoed "t"), with that round's own expected blocks. The dongle answers in
+    order, so a round's answers all come before the next round's."""
     pending = getattr(conn, "h_pending", None)
     if pending is None:
         pending = conn.h_pending = {}
-    cycle = getattr(conn, "live_cycle", 0)
+    cycle = getattr(conn, "answer_cycle", None)
+    if cycle is None:
+        cycle = getattr(conn, "live_cycle", 0)
     if getattr(conn, "h_pending_cycle", cycle) != cycle:
         if pending:
             _live_note(conn, "cycle closed without all its blocks")
@@ -385,7 +399,9 @@ def _collect_live_block(block: str, raw: bytes, conn: tcpstack.Connection) -> No
         conn.h_done = set(getattr(conn, "h_done", set())) | {block}
     else:
         pending[block] = raw
-    expected = getattr(conn, "h_expected", frozenset())
+    expected = getattr(conn, "h_expected_by_cycle", {}).get(cycle)
+    if expected is None:
+        expected = getattr(conn, "h_expected", frozenset())
     done = getattr(conn, "h_done", set())
     if expected and expected.issubset(set(pending) | done):
         _flush_live_blocks(conn)
@@ -1209,6 +1225,7 @@ def _inflight(conn: tcpstack.Connection, now: float) -> dict:
     for token, sent_at in list(inflight.items()):
         if now - sent_at > _LIVE_REPLY_TIMEOUT_SEC:
             del inflight[token]
+            getattr(conn, "live_token_cycle", {}).pop(token, None)
             if token != _CLAIMED:
                 _live_note(conn, "answer missing")
     return inflight
@@ -1311,6 +1328,11 @@ def _send_control_ci(ci_b64: str, conn: Optional[tcpstack.Connection] = None, cl
         if sent_at is None:
             sent_at = claimed_at if claimed_at is not None else time.monotonic()
         inflight[token] = sent_at
+        # Which round the answer belongs to (_collect_live_block).
+        cycles = getattr(conn, "live_token_cycle", None)
+        if cycles is None:
+            cycles = conn.live_token_cycle = {}
+        cycles[token] = getattr(conn, "live_cycle", 0)
     topic = f"dtu/{conn.dtu_id}/sub/service/dev_rpc"
     payload = json.dumps(
         {
@@ -1512,9 +1534,11 @@ def _send_live_reads(conn: tcpstack.Connection, now: float, live_interval: float
     if queue is None:
         queue = conn.live_queue = []
     inflight = _inflight(conn, now)
-    # A round starts once every command of the previous one is answered (or timed
-    # out), so its last answers are decoded with it.
-    if not queue and not inflight and now >= getattr(conn, "next_live_ts", 0.0):
+    # A round starts as soon as the previous one is sent (2.7.00), without waiting for
+    # its last answers: each answer is matched to its own round by its "t"
+    # (_collect_live_block), so the pairs stay together and the dongle always has a
+    # command waiting. Up to 2.6.100 the bridge waited, about 0.6 s a round.
+    if not queue and now >= getattr(conn, "next_live_ts", 0.0):
         conn.next_live_ts = now + live_interval
         cycle = getattr(conn, "live_cycle", 0) + 1
         conn.live_cycle = cycle
@@ -1529,6 +1553,12 @@ def _send_live_reads(conn: tcpstack.Connection, now: float, live_interval: float
             conn.next_qflag_ts = now + _QFLAG_INTERVAL_SEC
             queue.append("QFLAG")
         conn.h_expected = frozenset(_H_BLOCKS[c] for c in queue if c in _H_BLOCKS)
+        by_cycle = getattr(conn, "h_expected_by_cycle", None)
+        if by_cycle is None:
+            by_cycle = conn.h_expected_by_cycle = {}
+        by_cycle[cycle] = conn.h_expected
+        for old in [c for c in by_cycle if c < cycle - 2]:
+            del by_cycle[old]
     readback = getattr(conn, "live_readback", None)
     while (queue or readback) and len(inflight) < _LIVE_MAX_INFLIGHT \
             and now >= getattr(conn, "live_next_ts", 0.0):
@@ -1537,6 +1567,9 @@ def _send_live_reads(conn: tcpstack.Connection, now: float, live_interval: float
             command = readback.pop(0)
             if command in _H_BLOCKS:
                 conn.h_expected = frozenset(getattr(conn, "h_expected", frozenset()) | {_H_BLOCKS[command]})
+                by_cycle = getattr(conn, "h_expected_by_cycle", None)
+                if by_cycle is not None:
+                    by_cycle[getattr(conn, "live_cycle", 0)] = conn.h_expected
         else:
             command = queue.pop(0)
         try:

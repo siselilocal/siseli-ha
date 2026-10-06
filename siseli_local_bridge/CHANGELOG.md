@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.7.00] - 2026-10-06
+
+### Changed
+
+- **Live rounds run back to back, without waiting for their last answers.** 2.6.100 started
+  a round only once every command of the previous one was answered: the dongle then had a
+  single command for a moment each round, and the power values came every 3.4 s instead
+  of the ~2.8 s its pace allows. A round now starts as soon as the previous one is sent;
+  each answer is matched to the round of its command by the "t" it carries
+  (`conn.live_token_cycle`, `conn.h_expected_by_cycle`), so the pairs are still decoded
+  together, and a round is only reported short when an answer is really missing.
+
 ## [2.6.100] - 2026-10-06
 
 ### Changed

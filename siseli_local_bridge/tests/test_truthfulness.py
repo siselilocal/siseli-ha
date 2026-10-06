@@ -1183,27 +1183,56 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             fakecloud._live_answered(conn, hop)
             self.assertEqual(len(conn.live_inflight), 2)
 
-    def test_a_round_starts_only_once_all_its_commands_are_answered(self):
+    def _answer(self, conn, token, command):
+        """The dongle's answer to `command`, carrying its "t", through _handle_publish."""
+        import base64
+        import json
+        topic = b"dtu/1/pub/service/dev_rpc_reply"
+        body = {"c": 5, "t": token, "s": "s", "i": 504, "e": 0,
+                "b": {"sa": "", "co": base64.b64encode(self._h_raw(command)).decode()}}
+        from src.siseli_local_bridge import fakecloud
+        fakecloud._handle_publish(0x30, len(topic).to_bytes(2, "big") + topic + b"\x00" + json.dumps(body).encode(), conn)
+
+    def test_the_next_round_starts_without_waiting_and_answers_keep_their_round(self):
+        """2.7.00: the next round starts as soon as the previous one is sent (2.6.100
+        waited for its last answers, about 0.6 s a round); an answer still belongs to
+        the round of its command, by its "t", so a pair is decoded together."""
         from types import SimpleNamespace
         from unittest import mock
         from src.siseli_local_bridge import fakecloud, tcpstack
         conn = SimpleNamespace(reply=mock.Mock(), dtu_id="1", closed=False, peer_ip="x", peer_port=1,
-                               live_queue=["HBAT", "HBMS1"], live_cycle=4, next_live_ts=0.0, next_qflag_ts=1e9)
+                               live_queue=["HBAT", "HBMS1"], live_cycle=4, next_live_ts=0.0, next_qflag_ts=1e9,
+                               h_expected=frozenset({"2ONL", "Yavb"}),
+                               h_expected_by_cycle={4: frozenset({"2ONL", "Yavb"})})
         clock = [100.0]
         with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 0), \
                 mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 1), \
                 mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
+                mock.patch.object(fakecloud, "log"), \
+                mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse, \
                 mock.patch.object(fakecloud.time, "monotonic", side_effect=lambda: clock[0]):
-            fakecloud.poll_due_connections()                      # the round's last two commands
+            fakecloud.poll_due_connections()                      # round 4's last two commands
             hbat, hbms1 = (self._token_of(c) for c in conn.reply.call_args_list)
-            fakecloud._live_answered(conn, hbat)
+            clock[0] = 100.1
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.live_cycle, 5)                  # round 5 starts at once
+            self.assertEqual(conn.reply.call_count, 2)            # but waits for a place
+            self._answer(conn, hbat, "HBAT")
             clock[0] = 100.5
             fakecloud.poll_due_connections()
-            self.assertEqual(conn.live_cycle, 4)                  # HBMS1 not answered yet
-            fakecloud._live_answered(conn, hbms1)
-            clock[0] = 100.6
-            fakecloud.poll_due_connections()
-            self.assertEqual(conn.live_cycle, 5)                  # then the next round
+            self.assertEqual(conn.reply.call_count, 3)            # HGRID of round 5 goes
+
+            def decoded():  # the block payloads, not the raw answers passed through
+                return [c for c in parse.call_args_list if b'"ct"' in c[0][0]]
+
+            self.assertEqual(decoded(), [])                       # HBAT waits for its pair
+            self._answer(conn, hbms1, "HBMS1")                     # round 4's last answer
+            self.assertEqual(len(decoded()), 1)
+            self.assertEqual(set(self._blocks_of(decoded()[0])), {"2ONL", "Yavb"})
+            hgrid = self._token_of(conn.reply.call_args)
+            self._answer(conn, hgrid, "HGRID")                     # round 5's first answer
+        self.assertEqual(conn.h_pending, {"WdRR": self._h_raw("HGRID")})
+        self.assertFalse(getattr(conn, "live_issues", None))      # no round closed short
 
     def test_a_home_assistant_command_waits_for_a_free_place(self):
         """The live reads keep both places nearly always taken; a command from Home
