@@ -305,8 +305,8 @@ SYNTH_WDRR_ABSURD_POWER = b"(232.7 49.9 280 170 65 40 +999999999 0 11000 11+0000
 # but only in Device A's *configuration*. Captures still wanted: a 120 V unit (the
 # 93VQ config decode no-ops unless the packed word ends "230"), an inverter reporting
 # a real BMS fault word (every capture so far reads the all-clear 1001100000000000),
-# a single-inverter non-parallel install, and a second output capacity set to a single
-# digit (see the dHrK[16] note in parsers.py).
+# a single-inverter non-parallel install, and a second output restore SOC of 5 or 100 %
+# (see the dHrK[16] note in parsers.py).
 # ---------------------------------------------------------------------------
 
 

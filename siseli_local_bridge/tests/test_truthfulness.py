@@ -888,7 +888,7 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
     def test_live_interval_has_a_floor_and_an_off_switch(self):
         from unittest import mock
         from src.siseli_local_bridge import fakecloud
-        for configured, expected in ((0, 0), (-3, 0), (1, 5), (4, 5), (5, 5), (10, 10), (30, 30)):
+        for configured, expected in ((0, 0), (-3, 0), (1, 1), (2, 2), (3, 3), (5, 5), (10, 10), (30, 30)):
             with mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", configured):
                 self.assertEqual(fakecloud._live_interval(), expected, configured)
 
@@ -905,6 +905,9 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         "HGEN": "(261003 09:03 01.263 0028.4 0107.7 000000107.7 000000000000",
         "HSTS": "(00 B010000000000 10211002120B117200000",
         "HPVB": "(000.0 00.0 00000 0 380.0 00000000000000000000000",
+        # The vendor app's HEEP1/HEEP2 answers (captures of 2026-09-25), 93VQ and dHrK.
+        "HEEP1": "(1 060 002 00611110240 002 0 0 1 0 1 015 020 030 025 056.4 056.4 042.0 005 0 0 ",
+        "HEEP2": "(0 044.0 015 044.0 044.0 048.0 0 056.0 060 120 030 0000 0000 05 0000 52.0 20975",
     }
 
     def _h_raw(self, command):
@@ -942,30 +945,127 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         envelope = json.loads(payload[payload.index(b"{"):])
         return {b["cn"]: base64.b64decode(b["co"]) for b in envelope["b"]["ct"]}
 
-    def test_the_battery_and_power_groups_are_decoded_as_soon_as_each_is_complete(self):
+    def test_the_power_group_goes_at_once_and_each_pair_together_at_the_round_end(self):
         from unittest import mock
         from src.siseli_local_bridge import fakecloud
-        cycle = ["HBAT", "HBMS1", "HBMS2", "HBMS3", "HGRID", "HOP", "HPV", "HSTS"]
-        conn = self._h_conn(fakecloud._H_BLOCKS[c] for c in cycle)
-        with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse, \
-                mock.patch.object(fakecloud, "log") as log:
-            for command in cycle[:3]:
-                self._feed(conn, command)
-            parse.assert_not_called()  # the battery and BMS blocks wait for the cells: never decoded apart
-            self._feed(conn, "HBMS3")
-            self.assertEqual(parse.call_count, 1)
-            self.assertEqual(set(self._blocks_of(parse.call_args)), {"2ONL", "Yavb", "uxJp", "v09K"})
-            for command in cycle[4:6]:
-                self._feed(conn, command)
-            self.assertEqual(parse.call_count, 1)
-            self._feed(conn, "HPV")
-            self.assertEqual(parse.call_count, 2)
-            self.assertEqual(set(self._blocks_of(parse.call_args)), {"WdRR", "2l0E", "Mpod"})
-            self._feed(conn, "HSTS")  # the rotating slow block goes alone, with nothing re-sent
-            self.assertEqual(parse.call_count, 3)
-            self.assertEqual(set(self._blocks_of(parse.call_args)), {"eo8w"})
-        log.assert_not_called()
-        self.assertEqual(conn.h_pending, {})
+        for pair, blocks in ((("HBAT", "HBMS1"), {"2ONL", "Yavb"}), (("HBMS2", "HBMS3"), {"uxJp", "v09K"})):
+            with self.subTest(pair=pair):
+                round_ = list(fakecloud._LIVE_PRIORITY) + list(pair)
+                conn = self._h_conn(fakecloud._H_BLOCKS[c] for c in round_)
+                with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse, \
+                        mock.patch.object(fakecloud, "log") as log:
+                    self._feed(conn, "HGRID")
+                    self._feed(conn, "HOP")
+                    parse.assert_not_called()
+                    self._feed(conn, "HPV")  # the power trio is decoded as soon as it is in
+                    self.assertEqual(set(self._blocks_of(parse.call_args)), {"WdRR", "2l0E", "Mpod"})
+                    self._feed(conn, pair[0])
+                    self.assertEqual(parse.call_count, 1)  # half a pair is never decoded alone
+                    self._feed(conn, pair[1])
+                    self.assertEqual(parse.call_count, 2)
+                    self.assertEqual(set(self._blocks_of(parse.call_args)), blocks)
+                log.assert_not_called()
+                self.assertEqual(conn.h_pending, {})
+
+    def test_every_pair_the_decoder_needs_together_shares_a_round(self):
+        from src.siseli_local_bridge import fakecloud
+        rounds = [set(pair) for pair in fakecloud._LIVE_OTHERS]
+        for together in ({"HBAT", "HBMS1"}, {"HBMS2", "HBMS3"}):
+            self.assertTrue(any(together <= r for r in rounds), together)
+        listed = set(fakecloud._LIVE_PRIORITY) | {c for pair in fakecloud._LIVE_OTHERS for c in pair if c}
+        read_back_only = {"HEEP1", "HEEP2"}  # the settings blocks, read only after a command
+        self.assertEqual(listed | set(fakecloud._LIVE_SLOW) | read_back_only, set(fakecloud._H_BLOCKS) | {"QMOD", "QPIWS"})
+
+    def test_every_control_has_a_read_back(self):
+        from src.siseli_local_bridge import fakecloud, mqtt
+        settings = set(mqtt._CONTROL_SWITCHES) | set(mqtt._CONTROL_SELECTS) | set(mqtt._CONTROL_NUMBERS) \
+            | set(mqtt._CONTROL_HOUR_SELECTS) | {"sync_inverter_clock"}
+        self.assertEqual(sorted(settings - set(fakecloud._READBACK)), [])
+        self.assertEqual(sorted(set(fakecloud._READBACK) - settings), [])
+        for commands in fakecloud._READBACK.values():
+            for command in commands:
+                self.assertTrue(command in fakecloud._H_BLOCKS or command == "QFLAG", command)
+
+    def test_a_command_s_read_back_goes_first_once_the_dongle_answered(self):
+        """2.6.97: the setting comes back from a live HEEP1/HEEP2 read seconds after
+        its command, not from the dongle's minute-old copy."""
+        import base64
+        import json
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, tcpstack
+        conn = SimpleNamespace(reply=mock.Mock(), dtu_id="1", closed=False, peer_ip="x", peer_port=1)
+        clock = [100.0]
+
+        def sent():
+            out = []
+            for call in conn.reply.call_args_list:
+                frame = call[0][0]
+                raw = base64.b64decode(json.loads(frame[frame.index(b"{"):])["b"]["ci"])
+                out.append(raw[:5].decode("ascii", "replace"))
+            return out
+
+        with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 0), \
+                mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 1), \
+                mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
+                mock.patch.object(fakecloud, "log"), \
+                mock.patch.object(fakecloud.time, "monotonic", side_effect=lambda: clock[0]):
+            fakecloud.poll_due_connections()                  # HGRID and HOP out (two places)
+            fakecloud._live_answered(conn)                    # HGRID answered: a place frees
+            self.assertTrue(fakecloud.send_control_switch("buzzer", True))  # takes it
+            self.assertEqual(conn.live_readback, ["HEEP1"])
+            clock[0] = 100.5
+            fakecloud.poll_due_connections()
+            self.assertEqual(len(sent()), 3)                  # both places taken: nothing more
+            fakecloud._live_answered(conn)                    # HOP answered
+            clock[0] = 100.6
+            fakecloud.poll_due_connections()
+            self.assertEqual(sent()[-1], "HEEP1")              # before the rest of the round
+            self.assertIn("93VQ", conn.h_expected)
+            self.assertEqual(conn.live_readback, [])
+            fakecloud._live_answered(conn)                    # the buzzer command answered
+            clock[0] = 100.7
+            fakecloud.poll_due_connections()
+            self.assertEqual(sent()[-1], "HPV\r")              # then the round goes on
+        # A HEEP1 answer is decoded as 93VQ (buzzer = token 5).
+        conn2 = self._h_conn({"93VQ"})
+        with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse:
+            self._feed(conn2, "HEEP1")
+        self.assertEqual(set(self._blocks_of(parse.call_args)), {"93VQ"})
+
+    def test_a_read_back_is_decoded_at_once_not_at_the_round_end(self):
+        """2.6.97 held the HEEP1 answer until the round's last block: 5.7 s from the
+        buzzer command to Home Assistant."""
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        round_ = list(fakecloud._LIVE_PRIORITY) + ["HBAT", "HBMS1"]
+        for command, block in (("HEEP1", "93VQ"), ("HEEP2", "dHrK"), ("HGEN", "COST")):
+            with self.subTest(command=command):
+                conn = self._h_conn({fakecloud._H_BLOCKS[c] for c in round_} | {block})
+                with mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True) as parse:
+                    self._feed(conn, "HGRID")
+                    self._feed(conn, command)  # mid-round
+                    self.assertEqual(parse.call_count, 1)
+                    self.assertEqual(set(self._blocks_of(parse.call_args)), {block})
+                    self.assertEqual(set(conn.h_pending), {"WdRR"})  # the round goes on as before
+
+    def test_a_restore_asks_one_read_back_at_its_end(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, settings_backup
+        conn = SimpleNamespace(dtu_id="1", closed=False)
+        with mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 1), \
+                mock.patch.object(fakecloud, "_first_established_connection", return_value=conn):
+            with mock.patch.object(settings_backup, "restore_running", return_value=True):
+                fakecloud.queue_readback("buzzer")
+                self.assertFalse(getattr(conn, "live_readback", None))  # not after each command
+                for setting in ("buzzer", "backlight", "dual_output", "eco", "bms_lock_machine_soc"):
+                    fakecloud.queue_readback(setting, during_restore=True)
+            self.assertEqual(conn.live_readback, ["HEEP1", "HEEP2", "QFLAG"])  # each block once
+        with mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 0), \
+                mock.patch.object(fakecloud, "_first_established_connection", return_value=SimpleNamespace()) as first:
+            fakecloud.queue_readback("buzzer")  # no live reads: nothing to ask
+        first.assert_not_called()
 
     def test_a_group_the_cycle_does_not_fully_expect_waits_for_the_cycle_end(self):
         from unittest import mock
@@ -994,6 +1094,165 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
             core.telemetry_poll_loop()
         poll.assert_called_once()
         tick.assert_called_once()
+
+    def test_the_loop_polls_every_tenth_of_a_second_and_the_rest_once_a_second(self):
+        from unittest import mock
+        from src.siseli_local_bridge import core, fakecloud, state as shared_state, tcpstack
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 20:
+                shared_state.RUNNING = False
+
+        with mock.patch.object(shared_state, "RUNNING", True), \
+                mock.patch.object(core.time, "sleep", side_effect=sleep), \
+                mock.patch.object(tcpstack, "retransmit_tick") as retransmit, \
+                mock.patch.object(fakecloud, "poll_due_connections") as poll, \
+                mock.patch.object(core, "publish_tick") as tick:
+            core.telemetry_poll_loop()
+        self.assertEqual(set(sleeps), {0.1})
+        self.assertEqual(poll.call_count, 20)
+        self.assertEqual((retransmit.call_count, tick.call_count), (2, 2))
+
+    def _pipeline_conn(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        return SimpleNamespace(reply=mock.Mock(), dtu_id="1", closed=False, peer_ip="x", peer_port=1)
+
+    @staticmethod
+    def _token_of(call):
+        import json
+        frame = call[0][0]
+        return json.loads(frame[frame.index(b"{"):])["t"]
+
+    def test_two_live_commands_are_kept_in_flight(self):
+        """2.6.100: the dongle answers one command every 0.55 s with a second one
+        waiting, 0.76 s with one at a time (measured 2026-10-06), so two go ahead; a
+        third waits for an answer, then goes _LIVE_AFTER_REPLY_SEC later."""
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, tcpstack
+        self.assertEqual(fakecloud._LIVE_MAX_INFLIGHT, 2)
+        conn = self._pipeline_conn()
+        gap = fakecloud._LIVE_AFTER_REPLY_SEC
+        clock = [100.0]
+        with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 0), \
+                mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 1), \
+                mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
+                mock.patch.object(fakecloud.time, "monotonic", side_effect=lambda: clock[0]):
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.reply.call_count, 2)            # HGRID and HOP at once
+            first = self._token_of(conn.reply.call_args_list[0])
+            clock[0] = 100.5
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.reply.call_count, 2)            # no third one
+            fakecloud._live_answered(conn, first)                 # HGRID answered at 100.5
+            clock[0] = 100.5 + gap - 0.01
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.reply.call_count, 2)            # not before the gap
+            clock[0] = 100.5 + gap
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.reply.call_count, 3)            # HPV
+            fakecloud._live_answered(conn, first)                 # the same answer again
+            self.assertEqual(len(conn.live_inflight), 2)          # changes nothing
+
+    def test_only_its_own_answer_frees_a_place(self):
+        """Seen on the wire 2026-10-06 (2.6.94-2.6.98): any answer freed the link, and
+        the bridge drifted one command ahead without knowing it. A command not answered
+        within _LIVE_REPLY_TIMEOUT_SEC frees its place, and its late answer is ignored."""
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, tcpstack
+        conn = self._pipeline_conn()
+        clock = [100.0]
+        with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 0), \
+                mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 1), \
+                mock.patch.object(fakecloud, "log") as log, \
+                mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
+                mock.patch.object(fakecloud.time, "monotonic", side_effect=lambda: clock[0]):
+            fakecloud.poll_due_connections()                      # HGRID, HOP
+            hgrid, hop = (self._token_of(c) for c in conn.reply.call_args_list)
+            fakecloud._live_answered(conn, "someone-else")
+            clock[0] = 100.3
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.reply.call_count, 2)            # a foreign "t" frees nothing
+            clock[0] = 100.0 + fakecloud._LIVE_REPLY_TIMEOUT_SEC + 0.1
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.reply.call_count, 4)            # both timed out: two more go
+            self.assertIn("answer missing x2", str(log.call_args))  # the [LIVE] report says so
+            fakecloud._live_answered(conn, hgrid)                 # late answers: ignored
+            fakecloud._live_answered(conn, hop)
+            self.assertEqual(len(conn.live_inflight), 2)
+
+    def test_a_round_starts_only_once_all_its_commands_are_answered(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud, tcpstack
+        conn = SimpleNamespace(reply=mock.Mock(), dtu_id="1", closed=False, peer_ip="x", peer_port=1,
+                               live_queue=["HBAT", "HBMS1"], live_cycle=4, next_live_ts=0.0, next_qflag_ts=1e9)
+        clock = [100.0]
+        with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 0), \
+                mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 1), \
+                mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
+                mock.patch.object(fakecloud.time, "monotonic", side_effect=lambda: clock[0]):
+            fakecloud.poll_due_connections()                      # the round's last two commands
+            hbat, hbms1 = (self._token_of(c) for c in conn.reply.call_args_list)
+            fakecloud._live_answered(conn, hbat)
+            clock[0] = 100.5
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.live_cycle, 4)                  # HBMS1 not answered yet
+            fakecloud._live_answered(conn, hbms1)
+            clock[0] = 100.6
+            fakecloud.poll_due_connections()
+            self.assertEqual(conn.live_cycle, 5)                  # then the next round
+
+    def test_a_home_assistant_command_waits_for_a_free_place(self):
+        """The live reads keep both places nearly always taken; a command from Home
+        Assistant waits for one to free up, never as a third command (e=104)."""
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        clock = [10.0]
+        conn = self._pipeline_conn()
+        conn.live_inflight = {"a": 9.9, "b": 10.0}
+
+        def sleep(seconds):
+            clock[0] += seconds
+            if clock[0] >= 10.3 and "a" in conn.live_inflight:
+                fakecloud._live_answered(conn, "a")              # a live read answered at 10.3
+
+        with mock.patch.object(fakecloud.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(fakecloud.time, "sleep", side_effect=sleep), \
+                mock.patch.object(fakecloud, "_first_established_connection", return_value=conn):
+            self.assertTrue(fakecloud._send_control_ci("QUNLOQ0N"))
+        self.assertAlmostEqual(clock[0], 10.3, places=2)         # sent once a place was free
+        conn.reply.assert_called_once()
+        token = self._token_of(conn.reply.call_args)
+        self.assertEqual(set(conn.live_inflight), {"b", token})  # it holds the place
+        # Never more than _CONTROL_WAIT_SEC when no place frees up.
+        clock[0] = 20.0
+        conn.live_inflight = {"c": 20.0, "d": 20.0}
+        with mock.patch.object(fakecloud.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(fakecloud.time, "sleep", side_effect=lambda s: clock.__setitem__(0, clock[0] + s)), \
+                mock.patch.object(fakecloud, "_first_established_connection", return_value=conn):
+            fakecloud._send_control_ci("QUNLOQ0N")
+        self.assertLessEqual(clock[0] - 20.0, fakecloud._LIVE_REPLY_TIMEOUT_SEC + 0.06)
+
+    def test_a_command_answer_frees_its_place(self):
+        """Every dev_rpc answer to a command (i=504) goes through _live_answered, by "t"."""
+        import json
+        from types import SimpleNamespace
+        from unittest import mock
+        from src.siseli_local_bridge import fakecloud
+        conn = SimpleNamespace(dtu_id="1", live_inflight={"x": 49.5, "y": 49.8})
+        topic = b"dtu/1/pub/service/dev_rpc_reply"
+        payload = b"\x00" + json.dumps({"c": 5, "t": "x", "s": "y", "i": 504, "e": 0, "b": {"co": "KEFDSzkN"}}).encode()
+        frame = len(topic).to_bytes(2, "big") + topic + payload
+        with mock.patch.object(fakecloud, "log"), \
+                mock.patch.object(fakecloud.SolarParser, "parse_payload", return_value=True), \
+                mock.patch.object(fakecloud.time, "monotonic", return_value=50.0):
+            fakecloud._handle_publish(0x30, frame, conn)
+        self.assertEqual(conn.live_inflight, {"y": 49.8})
+        self.assertAlmostEqual(conn.live_next_ts, 50.0 + fakecloud._LIVE_AFTER_REPLY_SEC)
+
     def test_a_lost_reply_is_made_up_for_when_the_next_cycle_starts(self):
         from unittest import mock
         from src.siseli_local_bridge import fakecloud
@@ -1062,21 +1321,27 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
                     return known
             return raw.decode().rstrip("\r")
 
-        # The first cycle also carries the once-a-minute QFLAG, so it has ten commands.
-        ticks = [100.0 + i for i in range(10)] + [110.0 + i for i in range(9)]
+        # 2.6.96: every round reads the three powers, then the next pair of the others;
+        # the first round also carries the once-a-minute QFLAG. Four rounds: 6 + 5 + 5 + 5
+        # commands, two at a time (2.6.100), each tick answering everything in flight.
+        clock = [100.0]
         with mock.patch.object(fakecloud, "TELEMETRY_POLL_INTERVAL_SEC", 15), \
-                mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 10), \
+                mock.patch.object(fakecloud, "LIVE_POLL_INTERVAL_SEC", 1), \
                 mock.patch.dict(tcpstack.CONNECTIONS, {("a", 1, "b", 2): conn}, clear=True), \
-                mock.patch.object(fakecloud.time, "monotonic", side_effect=ticks):
-            for _ in ticks:
+                mock.patch.object(fakecloud.time, "monotonic", side_effect=lambda: clock[0]):
+            for _ in range(12):
                 fakecloud.poll_due_connections()
+                for token in list(conn.live_inflight):
+                    fakecloud._live_answered(conn, token)
+                clock[0] += 1.0
         sent = [command_of(c) for c in conn.reply.call_args_list]
-        fast = ["HBAT", "HBMS1", "HBMS2", "HBMS3", "HGRID", "HOP", "HPV", "QMOD"]
-        # One command per second, a cycle every 10 s, the slow set taking one turn each,
-        # QFLAG once a minute (so not in the second cycle).
-        self.assertEqual(sent, fast + ["HTEMP", "QFLAG"] + fast + ["HGEN"])
-        # The second cycle expects the fast blocks plus COST (HGEN), nothing else.
-        self.assertEqual(conn.h_expected, frozenset({"2ONL", "Yavb", "uxJp", "v09K", "WdRR", "2l0E", "Mpod", "COST"}))
+        power = ["HGRID", "HOP", "HPV"]
+        self.assertEqual(sent, power + ["HBMS2", "HBMS3", "QFLAG"]
+                         + power + ["QMOD", "HSTS"]
+                         + power + ["HBAT", "HBMS1"]
+                         + power + ["HBMS2", "HBMS3"])
+        # The pairs the decoder needs together are always in the same round.
+        self.assertEqual(conn.h_expected, frozenset({"WdRR", "2l0E", "Mpod", "uxJp", "v09K"}))
 
     def _connect_body(self, username=b"12345678901234567890"):
         proto = b"\x00\x04MQTT\x04"
@@ -1111,7 +1376,7 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         for call in conn.reply.call_args_list:
             frame = call[0][0]
             ids.append(json.loads(frame[frame.index(b"{"):])["i"])
-        self.assertEqual(len(ids), 10)       # the whole first cycle went out
+        self.assertEqual(len(ids), 6)        # the whole first round went out (3 powers, a pair, QFLAG)
         self.assertEqual(set(ids), {503})    # commands only: no i=501 poll
 
     def test_nothing_is_sent_when_both_the_poll_and_the_live_reads_are_off(self):
@@ -1464,11 +1729,58 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         with mock.patch.object(mqtt, "LANGUAGE", "en"), mock.patch.object(mqtt, "ENTITY_PREFIX", None):
             self.assertEqual(mqtt.display_control_name("buzzer", "Buzzer"), "Buzzer")
 
+    def test_withdrawn_sensors_are_emptied_on_every_discovery(self):
+        """The five sensors 2.6.64 renamed kept their retained configs: Home Assistant
+        showed them frozen until those were emptied by hand (2026-10-06)."""
+        from unittest import mock
+        from src.siseli_local_bridge import mqtt
+        from src.siseli_local_bridge.sensors import SENSORS
+        self.assertEqual([k for _, k in mqtt._WITHDRAWN_SENSORS if k in SENSORS], [])
+        topics = mqtt.withdrawn_sensor_topics()
+        self.assertIn(f"homeassistant/sensor/{mqtt.DEVICE_ID}_load/parallel_mode/config", topics)
+        with mock.patch.object(mqtt, "client") as client, mock.patch.object(mqtt, "publish_sensor_discovery"), \
+                mock.patch.object(mqtt, "publish_availability"):
+            mqtt.publish_discovery()
+        emptied = [c[0][0] for c in client.publish.call_args_list if c[0][1] == ""]
+        self.assertEqual(sorted(emptied), sorted(topics))
+
+    def test_settings_file_is_written_before_the_old_one_becomes_bak(self):
+        import os
+        import tempfile
+        from unittest import mock
+        from src.siseli_local_bridge import settings_backup
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "inverter_settings.yaml")
+            settings_backup._write_file(path, "old\n")
+            with mock.patch("builtins.open", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    settings_backup._write_file(path, "new\n")
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "old\n")  # still there after a failed write
+            settings_backup._write_file(path, "new\n")
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "new\n")
+            with open(path + ".bak", encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "old\n")
+
+    def test_settings_status_is_french_and_fits_home_assistant(self):
+        from unittest import mock
+        from src.siseli_local_bridge import config, settings_backup
+        with mock.patch("src.siseli_local_bridge.mqtt.client"):
+            with mock.patch.object(config, "LANGUAGE", "fr"):
+                self.assertEqual(settings_backup._msg("Saved", "Sauvegardé"), "Sauvegardé")
+            with mock.patch.object(config, "LANGUAGE", "en"):
+                self.assertEqual(settings_backup._msg("Saved", "Sauvegardé"), "Saved")
+            settings_backup._set_status("x" * 400)
+        self.assertEqual(len(settings_backup._status_text), settings_backup.STATUS_MAX_LEN)
+
     def test_french_sensor_names_show_the_programme(self):
         from unittest import mock
         from src.siseli_local_bridge import i18n, mqtt
         from src.siseli_local_bridge.sensors import SENSORS
         self.assertEqual(sorted(set(i18n.SENSOR_PROGRAMMES) - set(SENSORS)), [])
+        # Programme 44 is solar_feed_to_grid alone (front panel, 2026-09-27).
+        self.assertEqual([k for k, p in i18n.SENSOR_PROGRAMMES.items() if p == "44"], ["solar_feed_to_grid"])
         with mock.patch.object(mqtt, "LANGUAGE", "fr"), mock.patch.object(mqtt, "ENTITY_PREFIX", None):
             self.assertEqual(mqtt.display_sensor_name("Settings - Buzzer Function", "18"),
                              "Fonction buzzer (prog 18)")
@@ -1561,6 +1873,12 @@ class TestMainsInputRangeFollowsTheSetting(_ParserTestCase):
         self.assertEqual(state["second_output_discharge_time"], "0 min")
         self.assertEqual(state["second_output_battery_capacity"], 50)
         self.assertEqual(SolarParser._try_ascii_schema({"dHrK": block("55005")})["second_output_discharge_time"], "5 min")
+        # Read from the right: the % keeps working at 5 and 100 (widths 1-3).
+        for last, soc, minutes in (("5975", 5, "975 min"), ("05975", 5, "975 min"), ("100990", 100, "990 min")):
+            state = SolarParser._try_ascii_schema({"dHrK": block(last)})
+            self.assertEqual((state["second_output_battery_capacity"], state["second_output_discharge_time"]),
+                             (soc, minutes), last)
+        self.assertNotIn("second_output_battery_capacity", SolarParser._try_ascii_schema({"dHrK": block("50")}))
     def test_labels_are_the_select_options(self):
         """grid_working_range's HA select reads this key back verbatim."""
         from src.siseli_local_bridge import mqtt

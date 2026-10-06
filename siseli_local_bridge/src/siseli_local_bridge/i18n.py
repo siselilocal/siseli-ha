@@ -184,7 +184,6 @@ FR_NAMES: Dict[str, str] = {
     "Second Delay Time": "Délai sortie secondaire",
     "Second Output Battery Capacity": "Capacité batterie sortie secondaire",
     "Second Output Battery Voltage": "Tension batterie sortie secondaire",
-    "Second Output Discharge Time": "Durée de décharge sortie secondaire",
     "Software Version": "Version logicielle",
     "Strong Charging Voltage": "Tension de charge rapide",
     "System Time (Hour Minute)": "Heure de l'onduleur (h:min)",
@@ -241,7 +240,7 @@ FR_NAMES: Dict[str, str] = {
     "Save Inverter Settings": "Sauvegarder les réglages onduleur",
     "Restore Inverter Settings": "Restaurer les réglages onduleur",
     "Settings Backup Status": "État sauvegarde des réglages",
-    "Second Output Discharge Time": "Durée de décharge 2e sortie",
+    "Second Output Discharge Time": "Durée de décharge 2e sortie",  # also the sensor's name
     "Second Output Restore Delay": "Délai de rétablissement 2e sortie",
     "Second Output Restore SOC": "SOC de rétablissement 2e sortie",
 }
@@ -375,7 +374,8 @@ SENSOR_PROGRAMMES: Dict[str, str] = {
     "low_electric_lock_voltage_v": "29",
     "battery_equalization_mode": "30",
     "bms_communication_control_function": "37",
-    "grid_connection_function": "44",
+    # grid_connection_function has none: it did not move when Programme 44 did
+    # (2026-09-27, see parsers.py), and no other programme is known for it.
     "ct_function_switch": "57",
 }
 

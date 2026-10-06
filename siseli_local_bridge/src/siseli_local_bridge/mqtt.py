@@ -454,7 +454,8 @@ _CONTROL_TELEMETRY_STATE = {
         "group": get_sensor_group("maximum_total_charging_current_a"),
         "value_template": "{{ value_json.maximum_total_charging_current_a }}",
     },
-    # Programmes 62, 64, 65, 66: dHrK tokens 2, 16, 6 and 13 (62 and 64 confirmed by a write).
+    # Programmes 62, 64, 65, 66: dHrK token 2, token 16 (64 before its last three
+    # digits, 65 in them) and token 13; all four confirmed by a write.
     "second_output_cutoff_soc": {
         "group": get_sensor_group("parallel_mode_turn_off_soc"),
         "value_template": "{{ value_json.parallel_mode_turn_off_soc }}",
@@ -747,8 +748,9 @@ def subscribe_control_topics() -> None:
 #: Minimum seconds between two accepted commands for the same control topic --
 #: nothing upstream of this rate-limits a switch/button, so a stuck automation or
 #: a flaky Lovelace binding retrying rapidly would otherwise hammer the dongle
-#: with one dev_rpc write per message. Keyed by topic, written only from the
-#: single paho network thread that calls on_message.
+#: with one dev_rpc write per message. Keyed by topic, written from the paho
+#: network thread and from a settings restore (settings_backup, one command every
+#: few seconds); a lost update between the two would only skip one rate check.
 _CONTROL_MIN_INTERVAL_SEC = 1.0
 _CONTROL_LAST_SENT: Dict[str, float] = {}
 
@@ -854,9 +856,31 @@ def on_message(_client, _userdata, msg) -> None:
         log_error_always(f"[HA MQTT ERROR] control message on {msg.topic!r} failed: {exc}")
 
 
+#: Sensors that shipped once and were removed (2.6.64 renamed them after their real
+#: programmes): (group, key). stale_discovery_topics only sweeps keys still in
+#: SENSORS, so their retained configs stayed on the broker and Home Assistant kept
+#: them as frozen entities. Emptied on every discovery, which removes them.
+_WITHDRAWN_SENSORS = (
+    ("diagnostics", "eco"),  # Programme 06, now overload_restart_function
+    ("diagnostics", "charging_priority_order"),  # Programme 50, now grid_regulation_mode
+    ("load", "parallel_mode"),  # Programme 19, now display_return_to_homepage
+    ("pv", "power_supply_from_pv_to_load_in_ac_state"),  # Programme 23, now overload_to_bypass_function
+    ("load", "does_machine_have_output"),  # Programme 07, now over_temperature_restart_function
+)
+
+
+def withdrawn_sensor_topics() -> list:
+    return [
+        f"{MQTT_DISCOVERY_PREFIX}/sensor/{device_id_for_group(group)}/{key}/config"
+        for group, key in _WITHDRAWN_SENSORS
+    ]
+
+
 def publish_discovery() -> None:
     for key in sorted(SENSORS.keys()):
         publish_sensor_discovery(key)
+    for topic in withdrawn_sensor_topics():
+        client.publish(topic, "", retain=True)
 
     # The watchdog's current verdict, never a literal. on_connect calls this on every
     # reconnect, so publishing True here re-marked a stale bridge as available and the

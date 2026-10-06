@@ -22,14 +22,18 @@ from typing import Dict, List, Optional, Tuple
 
 from . import state as _state
 from .config import DEVICE_ID, MQTT_DISCOVERY_PREFIX, SETTINGS_BACKUP_FILE, SETTINGS_DEVICE_MARKER_FILE
+from .i18n import CONTROL_PROGRAMMES
 from .loggers import log
 
-#: Seconds between two restore commands: the dongle takes one command at a time and
-#: answers e=104 while another is pending, and the live reads share the same link.
+#: Seconds between two restore commands: the dongle is given two commands at once at
+#: most (it answers e=104 when overloaded), and the live reads share the same link.
 RESTORE_SPACING_SEC = 3.0
 #: Wait before the read-back is compared (the dongle refreshes its settings block
 #: about once a minute).
 VERIFY_DELAY_SEC = 90.0
+#: The same wait when the live reads are on: the settings blocks are then read once,
+#: right after the last command (fakecloud.queue_readback), a few seconds at most.
+VERIFY_DELAY_LIVE_SEC = 15.0
 
 #: Order matters: Programme 38 raises 39 and 62 by itself, so it goes first; the
 #: second output is switched on last, once its thresholds are in place.
@@ -50,21 +54,12 @@ _RESTORE_ORDER = (
 #: Saved for information, never written back.
 _READ_ONLY = ("battery_type",)
 
-#: Manual programme of each setting, only for the comments in the file.
+#: Manual programme of each setting, only for the comments in the file: the
+#: numbers shown in the entity names, plus a note for two of them.
 _PROGRAMMES = {
-    "bms_lock_machine_soc": "38", "bms_restore_mains_charging_soc": "39",
-    "bms_restore_battery_discharging_soc": "40", "bms_inverter_startup_soc": "41",
-    "second_output_cutoff_soc": "62", "second_output_restore_soc": "64",
-    "second_output_discharge_time": "65, 0 = disabled", "second_output_delay_time": "66",
-    "back_to_grid_voltage": "12", "back_to_battery_voltage": "13", "equalization_voltage": "31",
-    "grid_tie_current": "56", "max_charging_current": "02",
-    "output_source_priority": "01", "charger_priority": "16", "solar_supply_priority": "43",
-    "max_utility_charge_current": "11", "grid_working_range": "03", "output_voltage": "10",
-    "grid_regulation_mode": "50", "ac_charging_start_time": "46", "ac_charging_stop_time": "47",
-    "backlight": "20", "buzzer": "18", "display_return_to_homepage": "19", "eco": "08",
-    "overload_restart": "06", "over_temperature_restart": "07",
-    "primary_source_interrupt_alarm": "22", "overload_bypass": "23", "fault_code_record": "25",
-    "dual_output": "60", "battery_type": "05, read only: changing it cuts the output",
+    **CONTROL_PROGRAMMES,
+    "second_output_discharge_time": f"{CONTROL_PROGRAMMES['second_output_discharge_time']}, 0 = disabled",
+    "battery_type": f"{CONTROL_PROGRAMMES['battery_type']}, read only: changing it cuts the output",
 }
 
 _LOCK = threading.Lock()
@@ -219,17 +214,19 @@ def parse_file(text: str) -> Tuple[Dict[str, str], Optional[str]]:
 
 
 def _write_file(path: str, text: str) -> None:
+    """The new file is written in full before the previous one becomes .bak, so a
+    failed write (disk full...) never leaves the folder without a settings file."""
     folder = os.path.dirname(path)
     if folder:
         os.makedirs(folder, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
     if os.path.exists(path):
         try:
             os.replace(path, path + ".bak")
         except OSError as exc:
             log(f"[SETTINGS] could not keep the previous file as .bak: {exc}", level="warning")
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(text)
     os.replace(tmp, path)
 
 
@@ -238,8 +235,22 @@ def _write_file(path: str, text: str) -> None:
 STATUS_TOPIC = f"{DEVICE_ID}/settings_backup/status"
 
 
+def _msg(english: str, french: str) -> str:
+    """The status text in the add-on's LANGUAGE."""
+    from . import config
+
+    return french if config.LANGUAGE == "fr" else english
+
+
+#: Home Assistant refuses a sensor state longer than this (a long "still different"
+#: list after a restore would otherwise leave the status stuck on the previous text).
+STATUS_MAX_LEN = 255
+
+
 def _set_status(text: str) -> None:
     global _status_text
+    if len(text) > STATUS_MAX_LEN:
+        text = text[:STATUS_MAX_LEN - 1] + "…"
     _status_text = text
     try:
         from . import mqtt
@@ -297,7 +308,8 @@ def set_confirmation(on: bool) -> None:
     _CONFIRMED_AT = time.monotonic() if on else None
     _publish_confirmation(on)
     if on:
-        _set_status(f"Restore armed: press Restore Inverter Settings within {int(CONFIRM_WINDOW_SEC // 60)} min")
+        _set_status(_msg(f"Restore armed: press Restore Inverter Settings within {int(CONFIRM_WINDOW_SEC // 60)} min",
+                         f"Restauration armée : appuyez sur Restaurer les réglages onduleur dans les {int(CONFIRM_WINDOW_SEC // 60)} min"))
 
 
 def _take_confirmation() -> bool:
@@ -389,19 +401,21 @@ def save_settings(path: Optional[str] = None) -> Optional[int]:
     restorable = [s for s in values if s in _RESTORE_ORDER]
     if not restorable:
         log("[SETTINGS] nothing to save: the inverter has not reported its settings yet", level="warning")
-        _set_status("Nothing saved: no settings read from the inverter yet")
+        _set_status(_msg("Nothing saved: no settings read from the inverter yet",
+                         "Rien sauvegardé : aucun réglage lu sur l'onduleur pour l'instant"))
         return None
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     try:
         _write_file(path, render_file(values, stamp))
     except OSError as exc:
         log(f"[SETTINGS] could not write {path}: {exc}", level="warning")
-        _set_status(f"Save failed: {exc}")
+        _set_status(_msg(f"Save failed: {exc}", f"Échec de la sauvegarde : {exc}"))
         return None
     missing = len(_RESTORE_ORDER) - len(restorable)
-    note = f", {missing} not read yet" if missing else ""
+    note = _msg(f", {missing} not read yet", f", {missing} pas encore lus") if missing else ""
     log(f"[SETTINGS] saved {len(restorable)} settings to {path}", level="warning")
-    _set_status(f"Saved {stamp}: {len(restorable)} settings{note}")
+    _set_status(_msg(f"Saved {stamp}: {len(restorable)} settings{note}",
+                     f"Sauvegardé {stamp} : {len(restorable)} réglages{note}"))
     return len(restorable)
 
 
@@ -461,6 +475,11 @@ def plan_restore(values: Dict[str, str], snapshot=None) -> Tuple[List[Tuple[str,
     return to_send, skipped
 
 
+def restore_running() -> bool:
+    """True while a restore is sending its commands (they ask for no read-back each)."""
+    return _LOCK.locked()
+
+
 def _connected() -> bool:
     """True while the dongle is connected to the bridge's local cloud: every command
     is sent on that connection, there is nothing to send them on otherwise."""
@@ -468,33 +487,48 @@ def _connected() -> bool:
     return fakecloud._first_established_connection() is not None
 
 
-def _restore_worker(to_send, values) -> None:
+def _restore_worker(to_send) -> None:
     mqtt, _ = _tables()
     try:
         sent = 0
-        for index, (setting, wanted, payload) in enumerate(to_send, 1):
+        for index, (setting, _wanted, payload) in enumerate(to_send, 1):
             if not _connected():
                 log(f"[SETTINGS] restore stopped after {sent} of {len(to_send)}: the dongle disconnected", level="warning")
-                _set_status(f"Restore stopped after {sent}/{len(to_send)}: the dongle is no longer connected")
+                _set_status(_msg(f"Restore stopped after {sent}/{len(to_send)}: the dongle is no longer connected",
+                                 f"Restauration arrêtée après {sent}/{len(to_send)} : la dongle n'est plus connectée"))
                 return
-            _set_status(f"Restoring {index}/{len(to_send)}: {setting}")
+            _set_status(_msg(f"Restoring {index}/{len(to_send)}: {setting}",
+                             f"Restauration {index}/{len(to_send)} : {setting}"))
             mqtt._handle_control_message(mqtt.control_command_topic(setting), payload.encode())
             sent += 1
             time.sleep(RESTORE_SPACING_SEC)
-        _set_status(f"Restore sent ({sent} settings), checking in {int(VERIFY_DELAY_SEC)} s")
-        time.sleep(VERIFY_DELAY_SEC)
+        # One live read of each settings block for the whole restore (2.6.97), rather
+        # than one after each command; then a short wait is enough. Without the live
+        # reads, the dongle's copy (about once a minute) is all there is.
+        _, fakecloud = _tables()
+        delay = VERIFY_DELAY_SEC
+        if fakecloud._live_interval() > 0:
+            for setting, _wanted, _payload in to_send:
+                fakecloud.queue_readback(setting, during_restore=True)
+            delay = min(VERIFY_DELAY_SEC, VERIFY_DELAY_LIVE_SEC)
+        _set_status(_msg(f"Restore sent ({sent} settings), checking in {int(delay)} s",
+                         f"Restauration envoyée ({sent} réglages), vérification dans {int(delay)} s"))
+        time.sleep(delay)
         snapshot = _state.snapshot_state()
         wrong = [s for s, wanted, _ in to_send if not _same(s, displayed_value(s, snapshot), wanted)]
         if wrong:
             log(f"[SETTINGS] restore: {len(to_send) - len(wrong)}/{len(to_send)} confirmed, still different: "
                 + ", ".join(wrong), level="warning")
-            _set_status(f"Restored {len(to_send) - len(wrong)}/{len(to_send)}; still different: " + ", ".join(wrong))
+            _set_status(_msg(f"Restored {len(to_send) - len(wrong)}/{len(to_send)}; still different: ",
+                             f"Restauré {len(to_send) - len(wrong)}/{len(to_send)} ; encore différents : ")
+                        + ", ".join(wrong))
         else:
             log(f"[SETTINGS] restore: all {len(to_send)} settings confirmed by the inverter", level="warning")
-            _set_status(f"Restored: all {len(to_send)} settings confirmed")
+            _set_status(_msg(f"Restored: all {len(to_send)} settings confirmed",
+                             f"Restauré : les {len(to_send)} réglages sont confirmés"))
     except Exception as exc:
         log(f"[SETTINGS] restore failed: {exc}", level="warning")
-        _set_status(f"Restore failed: {exc}")
+        _set_status(_msg(f"Restore failed: {exc}", f"Échec de la restauration : {exc}"))
     finally:
         _LOCK.release()
 
@@ -504,36 +538,41 @@ def restore_settings(path: Optional[str] = None, wait: bool = False) -> bool:
     path = path or SETTINGS_BACKUP_FILE
     if not _take_confirmation():
         log("[SETTINGS] restore refused: the confirmation box is not ticked", level="warning")
-        _set_status("Restore refused: tick \"Warning: Confirm Restore Settings\" first (it overwrites the inverter settings), then press Restore")
+        _set_status(_msg("Restore refused: tick \"Warning: Confirm Restore Settings\" first (it overwrites the inverter settings), then press Restore",
+                         "Restauration refusée : cochez d'abord « Attention : confirmer la restauration » (elle écrase les réglages), puis appuyez sur Restaurer"))
         return False
     try:
         with open(path, "r", encoding="utf-8") as handle:
             values, saved_at = parse_file(handle.read())
     except OSError as exc:
         log(f"[SETTINGS] cannot read {path}: {exc}", level="warning")
-        _set_status(f"Restore refused: cannot read the file ({exc})")
+        _set_status(_msg(f"Restore refused: cannot read the file ({exc})",
+                         f"Restauration refusée : fichier illisible ({exc})"))
         return False
     if not values:
         log(f"[SETTINGS] {path} holds no settings", level="warning")
-        _set_status("Restore refused: the file holds no settings")
+        _set_status(_msg("Restore refused: the file holds no settings",
+                         "Restauration refusée : le fichier ne contient aucun réglage"))
         return False
     if not _connected():
         log("[SETTINGS] restore refused: the dongle is not connected to the local cloud", level="warning")
-        _set_status("Restore refused: the dongle is not connected to the local cloud (local mode needed)")
+        _set_status(_msg("Restore refused: the dongle is not connected to the local cloud (local mode needed)",
+                         "Restauration refusée : la dongle n'est pas connectée au cloud local (mode local nécessaire)"))
         return False
     to_send, skipped = plan_restore(values)
     if skipped:
         log("[SETTINGS] not restored: " + ", ".join(skipped), level="warning")
     if not to_send:
         log("[SETTINGS] restore: the inverter already holds every saved value", level="warning")
-        _set_status("Nothing to restore: the inverter already holds every saved value")
+        _set_status(_msg("Nothing to restore: the inverter already holds every saved value",
+                         "Rien à restaurer : l'onduleur a déjà toutes les valeurs sauvegardées"))
         return True
     if not _LOCK.acquire(blocking=False):
         log("[SETTINGS] a restore is already running", level="warning")
         return False
     log(f"[SETTINGS] restoring {len(to_send)} settings from {path} (saved {saved_at}): "
         + ", ".join(s for s, _, _ in to_send), level="warning")
-    worker = threading.Thread(target=_restore_worker, args=(to_send, values), daemon=True, name="settings-restore")
+    worker = threading.Thread(target=_restore_worker, args=(to_send,), daemon=True, name="settings-restore")
     worker.start()
     if wait:
         worker.join()

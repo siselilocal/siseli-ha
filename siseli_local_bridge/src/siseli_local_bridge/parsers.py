@@ -2117,30 +2117,17 @@ class SolarParser:
             if second_batt_v is not None:
                 state["second_output_battery_voltage_v"] = round(second_batt_v, 1)
         if len(vals) >= 17:
-            # dHrK[16] reads "50000" on the reference device and the portal reads 50%,
-            # so the first two digits are the value there. That rules out a zero-padded
-            # three-wide field -- 50 would render "050", giving "05000". It does NOT
-            # rule out a variable-width number left-packed into five characters, under
-            # which "10000" is 10 or 100 and neither reading can be preferred.
-            #
-            # Do not add a rule for 100 without a capture that settles it: set the
-            # second output capacity to a single digit and see whether the token reads
-            # "05000" (fixed two-digit field) or "50000" (variable width). Guessing here
-            # is precisely what 2.6.1 had to remove.
+            # dHrK[16] packs Programme 64 (restore SOC, %) followed by Programme 65
+            # (discharge time, min) as three digits: "50000" = 50 % and 0 (disabled),
+            # "20975" / "25975" = 20 / 25 % and 975 min, what the vendor app showed;
+            # 64 at 55 then 50 % moved the leading digits as written (2026-10-04).
+            # Read from the right, so the % keeps working whatever its width (5 % as
+            # "5975" or "05975", 100 % as "100975"). Neither 5 nor 100 % has been
+            # captured yet.
             cap_raw = vals[16].strip()
-            cap_val = None
-            if cap_raw.isdigit():
-                if len(cap_raw) >= 2:
-                    cap_val = int(cap_raw[:2])
-                else:
-                    cap_val = int(cap_raw)
-            if cap_val is not None:
-                state["second_output_battery_capacity"] = cap_val
-            # The same token carries Programme 65 in its last three digits: the
-            # captures read "20975" and "25975" (capacity 20/25 %, discharge time 975
-            # min, what the app showed) and "50000" (50 %, 0 = disabled).
-            if len(cap_raw) == 5 and cap_raw.isdigit():
-                state["second_output_discharge_time"] = f"{int(cap_raw[2:])} min"
+            if cap_raw.isdigit() and len(cap_raw) >= 4:
+                state["second_output_battery_capacity"] = int(cap_raw[:-3])
+                state["second_output_discharge_time"] = f"{int(cap_raw[-3:])} min"
 
         # Settings / mode block -> 93VQ
         vals = parsed.get("93VQ", ("", []))[1]

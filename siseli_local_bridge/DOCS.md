@@ -125,7 +125,7 @@ in step 3 above.
 | `UPDATE_INTERVAL_SEC` | `10` | Publish throttle. Raising it saves database storage |
 | `EXPIRE_AFTER_SEC` | `1800` | How long a value stays valid before Home Assistant marks it unavailable. `0` disables |
 | `TELEMETRY_TIMEOUT_SEC` | `1800` | How long without a decoded reading before the bridge marks sensors unavailable |
-| `LIVE_POLL_INTERVAL_SEC` | `10` | How often a cycle of live reads (PV, grid, output, battery, BMS and cell values, mode) is taken straight from the inverter; temperatures, energies and warnings are refreshed one by one every few cycles. The regular poll only returns a cache the dongle refreshes about once a minute. A cycle sends one command per second and takes about 8 s, so values under `8` cannot make it faster; values under `5` are raised to `5`. `0` disables it. Needs `LOCAL_CLOUD_IP` |
+| `LIVE_POLL_INTERVAL_SEC` | `10` | How often a cycle of live reads (PV, grid, output, battery, BMS and cell values, mode) is taken straight from the inverter; temperatures, energies and warnings are refreshed one by one every few cycles. The regular poll only returns a cache the dongle refreshes about once a minute. Each cycle reads grid, output and PV power plus two of the other reads in turn (battery, BMS and cells, mode, then the slow ones), keeping two commands with the dongle, the next going as soon as one is answered: about 2.8 s a cycle, so the power values refresh every cycle and the rest every third. A value shorter than a cycle runs the cycles back to back. Values under `1` are raised to `1`. `0` disables it. Needs `LOCAL_CLOUD_IP` |
 
 These three interact, and the add-on **refuses to start** if they contradict each other:
 

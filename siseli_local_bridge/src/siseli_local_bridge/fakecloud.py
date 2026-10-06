@@ -36,6 +36,7 @@ import json
 import random
 import re
 import string
+import threading
 import time
 from typing import Optional
 
@@ -291,6 +292,9 @@ def _handle_publish(control: int, body: bytes, conn: tcpstack.Connection) -> byt
             # 2.6.80 the answers to the live commands (i=504) also arrive here, and
             # counting them made the stall check unable to ever fire.
             envelope = _extract_envelope(payload)
+            if isinstance(envelope, dict) and envelope.get("i") == 504:
+                token = envelope.get("t")
+                _live_answered(conn, str(token) if token is not None else None)
             if isinstance(envelope, dict) and envelope.get("i") == 502:
                 conn.poll_reply_count = getattr(conn, "poll_reply_count", 0) + 1
                 conn.last_reply_ts = time.monotonic()
@@ -351,9 +355,9 @@ def _collect_live_block(block: str, raw: bytes, conn: tcpstack.Connection) -> No
 
     Decoded together because the decoder derives battery power from the currents of the
     payload in hand: HBAT (inverter current) and HBMS1 (BMS current) in two payloads
-    would make the figure jump between two bases. Hence the groups of _LIVE_GROUPS: each
-    is decoded as soon as it is complete, which is seconds before the cycle ends, and
-    what is left goes when the cycle is complete. When a reply went missing the
+    would make the figure jump between two bases. Hence the fixed pairs of _LIVE_OTHERS,
+    decoded together when the round (cycle) is complete, and the power group of
+    _LIVE_GROUPS, decoded as soon as it is complete. When a reply went missing the
     leftovers are decoded as soon as the next cycle's first answer shows the cycle has
     moved on."""
     pending = getattr(conn, "h_pending", None)
@@ -664,12 +668,24 @@ _QFLAG_INTERVAL_SEC = 60
 #: commands of this inverter family (ASCII + CR, no CRC -- the app's own HEEP1/HEEP2
 #: are two of them; names from github.com/rutgerputter/solarplug-esphome) each return
 #: the very text of one telemetry block, so the answers are fed to the normal decoder as
-#: blocks. Every LIVE_POLL_INTERVAL_SEC a cycle sends, one command per second, the fast
-#: set plus one command of the slow set (rotating), so each slow block refreshes every
-#: len(_LIVE_SLOW) cycles. The dongle answers a command with error 104 when another is
-#: still pending, hence one per tick; the cycle is therefore about 9 s long and a
-#: smaller interval cannot make it shorter. The floor below only guards the setting.
-LIVE_POLL_MIN_INTERVAL_SEC = 5
+#: blocks. Every LIVE_POLL_INTERVAL_SEC a cycle (a "round") sends the three power reads
+#: of _LIVE_PRIORITY plus the next pair of _LIVE_OTHERS, so the power values refresh
+#: every round and the rest every len(_LIVE_OTHERS) rounds; the slow set takes the free
+#: place of the third pair in turn. An interval shorter than a round starts the next
+#: one as soon as the previous one is answered (back to back), so 1 is allowed.
+#:
+#: Pace (measured on the wire, 2026-10-06, answers matched to commands by the "t" the
+#: dongle echoes): with one command at a time the dongle answers in 0.76 s (median, a
+#: sixth over 1 s), a power value every 4.4 s (2.6.99). With a second command waiting it
+#: answers one every 0.55 s, a power value every 2.8 s (2.6.94-2.6.98 ran that way by
+#: accident, one command ahead, which split the pairs). So up to _LIVE_MAX_INFLIGHT
+#: commands are sent ahead on purpose, each answer matched by its "t"
+#: (conn.live_inflight). A command not answered within _LIVE_REPLY_TIMEOUT_SEC frees its
+#: place; a command from Home Assistant takes the next free place (_claim_dongle).
+LIVE_POLL_MIN_INTERVAL_SEC = 1
+_LIVE_MAX_INFLIGHT = 2
+_LIVE_REPLY_TIMEOUT_SEC = 2.5
+_LIVE_AFTER_REPLY_SEC = 0.05
 _H_BLOCKS = {
     "HGRID": "WdRR",
     "HOP": "2l0E",
@@ -682,19 +698,32 @@ _H_BLOCKS = {
     "HTEMP": "V4W3",
     "HGEN": "COST",
     "HPVB": "noeP",
+    # The settings blocks, read only after a command (queue_readback), never in rounds.
+    "HEEP1": "93VQ",
+    "HEEP2": "dHrK",
 }
-#: HBAT and HBMS1 go together and in one payload: the battery power is computed from
-#: whichever currents the payload carries (BMS first, then the inverter's own), so they
-#: must not arrive in separate payloads. QMOD fills the Mode sensor.
-_LIVE_FAST = ("HBAT", "HBMS1", "HBMS2", "HBMS3", "HGRID", "HOP", "HPV", "QMOD")
+#: Read every round (2.6.96, the user's automations decide on these): grid import
+#: (HGRID), output power (HOP) and PV power (HPV).
+_LIVE_PRIORITY = ("HGRID", "HOP", "HPV")
+#: The other reads, one pair per round, so each comes back every third round. The pairs
+#: are fixed because the decoder needs their blocks in one payload (a round's leftovers
+#: are decoded together at its end): HBAT with HBMS1, the battery power being computed
+#: from whichever currents the payload carries (BMS first, then the inverter's own);
+#: HBMS2 (uxJp, BMS capacities) with HBMS3 (v09K, the 16 cells), the cell summary (max,
+#: min, delta and their positions) being derived only from a payload with both (read
+#: apart, those five values never updated, 2.6.81-82). None = the next command of
+#: _LIVE_SLOW. QMOD fills the Mode sensor.
+_LIVE_OTHERS = (("HBAT", "HBMS1"), ("HBMS2", "HBMS3"), ("QMOD", None))
 #: Blocks decoded as soon as the whole group has been read, instead of waiting for the
-#: cycle's last command: the battery group (about 4 s into a cycle) and the power trio
-#: (about 7 s). A group is only used when the cycle expects all of it; the grid, output
-#: and PV derived values do not depend on each other or on the battery's. HBMS2 (uxJp,
-#: the BMS capacities) and HBMS3 (v09K, the 16 cells) are in the battery group because
-#: the decoder derives the cell summary (max, min, delta and their positions) only from
-#: a payload that carries both: read apart, those five values never updated (2.6.81-82).
-_LIVE_GROUPS = (frozenset({"2ONL", "Yavb", "uxJp", "v09K"}), frozenset({"WdRR", "2l0E", "Mpod"}))
+#: round's last command: the power trio, first in every round, and the blocks a setting
+#: is read back from (queue_readback), alone: a read-back held until the round's end
+#: took 5.7 s from the command to Home Assistant (2.6.97). A group is only used when the
+#: round expects all of it; the grid, output and PV derived values do not depend on each
+#: other or on the battery's.
+_LIVE_GROUPS = (
+    frozenset({"WdRR", "2l0E", "Mpod"}),
+    frozenset({"93VQ"}), frozenset({"dHrK"}), frozenset({"COST"}),
+)
 _LIVE_SLOW = ("HSTS", "HTEMP", "HGEN", "HPVB", "QPIWS")
 #: Blocks that are never decoded on their own but ride along with another one. The
 #: decoder adds PV1 and PV2 into generation_power_w from the payload in hand, so noeP
@@ -708,7 +737,8 @@ _LIVE_SIDECAR = {"noeP": "Mpod"}
 _LIVE_BLOCK_FRESH_SEC = 150.0
 #: What each answer must look like, so a mislabelled or foreign line is never decoded
 #: as the wrong block. Token counts and one or two telltale tokens of the real answers
-#: (2026-10-03); the eleven shapes exclude each other.
+#: (2026-10-03, HEEP1/HEEP2 from the vendor app's of 2026-09-25); the thirteen shapes
+#: exclude each other.
 _H_SHAPES = {
     "HBMS1": lambda t: len(t) == 10 and re.fullmatch(r"[01]{16}", t[1]) is not None,
     "HBMS2": lambda t: len(t) == 8 and "." in t[0] and len(t[2]) == 1,
@@ -721,6 +751,10 @@ _H_SHAPES = {
     "HGEN": lambda t: len(t) == 7 and len(t[0]) == 6 and ":" in t[1],
     "HSTS": lambda t: len(t) == 3 and len(t[0]) == 2 and t[1][:1].isalpha(),
     "HPVB": lambda t: len(t) == 6 and "." in t[0] and "." in t[4],
+    # 93VQ ends with a space (21 tokens, the last empty); its 4th token is the 11-digit
+    # configuration pack. dHrK's first token is the dual output flag, its 2nd a voltage.
+    "HEEP1": lambda t: len(t) in (20, 21) and re.fullmatch(r"\d{11}", t[3]) is not None,
+    "HEEP2": lambda t: len(t) == 17 and t[0] in ("0", "1") and "." in t[1] and "." in t[3],
 }
 #: PI30 QMOD letter -> the "mode" sensor's text (same wording as the sensor's old tests).
 _QMOD_MODES = {
@@ -1040,11 +1074,12 @@ NUMBER_SETTINGS = {
     "second_output_cutoff_soc": {
         "channel": "PDSDS", "min": 5, "max": 95, "step": 5,
     },
-    # 64: dHrK token 16 (first two digits), manual default 50 %.
+    # 64: dHrK token 16 (all but its last three digits), manual default 50 %.
     "second_output_restore_soc": {
         "channel": "PDSRS", "min": 5, "max": 100, "step": 5,
     },
-    # 65: dHrK token 6, minutes, 4 digits, manual 0-990 in steps of 5 (0 = off).
+    # 65: the last three digits of dHrK token 16, minutes; written with 4 digits,
+    # manual 0-990 in steps of 5 (0 = off).
     "second_output_discharge_time": {
         "channel": "PDDCGT", "min": 0, "max": 990, "step": 5, "format": "{:04d}", "unit": "min",
     },
@@ -1107,6 +1142,7 @@ def send_control_number(setting: str, value: float) -> bool:
     ok = _send_control_ci(build_write_ci(definition["channel"], definition.get("format", "{:03d}").format(value)))
     if ok:
         log(f"[CONTROL] {setting} -> {value}")
+        queue_readback(setting)
     return ok
 
 
@@ -1141,6 +1177,7 @@ def send_control_select(setting: str, option: str) -> bool:
     ok = _send_control_ci(ci)
     if ok:
         log(f"[CONTROL] {setting} -> {option}")
+        queue_readback(setting)
     return ok
 
 
@@ -1151,20 +1188,134 @@ def _first_established_connection() -> Optional[tcpstack.Connection]:
     return None
 
 
-def _send_control_ci(ci_b64: str, conn: Optional[tcpstack.Connection] = None) -> bool:
+#: Serialises the places in flight (conn.live_inflight) between the live reads
+#: (telemetry thread), the answers (capture thread) and the commands from Home
+#: Assistant (MQTT thread, settings restore). Re-entrant: the live reads send while
+#: holding it.
+_SEND_LOCK = threading.RLock()
+#: Longest a command from Home Assistant waits for a free place.
+_CONTROL_WAIT_SEC = 3.0
+#: conn.live_inflight key of a place reserved by _claim_dongle until the send.
+_CLAIMED = "claimed"
+
+
+def _inflight(conn: tcpstack.Connection, now: float) -> dict:
+    """The commands sent and not answered yet ({"t": send time}), minus those older
+    than _LIVE_REPLY_TIMEOUT_SEC, whose place is freed (counted for _live_report).
+    Call with _SEND_LOCK held."""
+    inflight = getattr(conn, "live_inflight", None)
+    if inflight is None:
+        inflight = conn.live_inflight = {}
+    for token, sent_at in list(inflight.items()):
+        if now - sent_at > _LIVE_REPLY_TIMEOUT_SEC:
+            del inflight[token]
+            if token != _CLAIMED:
+                _live_note(conn, "answer missing")
+    return inflight
+
+
+def _claim_dongle(conn: tcpstack.Connection) -> None:
+    """Reserve a place among the _LIVE_MAX_INFLIGHT commands the dongle is given at
+    once (the live reads keep them nearly always taken), waiting for one to free up,
+    so a command from Home Assistant is never a third one (the dongle answers e=104
+    when overloaded). Never waits more than _CONTROL_WAIT_SEC: past that the command
+    goes anyway."""
+    deadline = None
+    while True:
+        with _SEND_LOCK:
+            now = time.monotonic()
+            inflight = _inflight(conn, now)
+            if len(inflight) < _LIVE_MAX_INFLIGHT or (deadline is not None and now >= deadline):
+                inflight[_CLAIMED] = now
+                return
+            if deadline is None:
+                deadline = now + _CONTROL_WAIT_SEC
+        time.sleep(0.05)
+
+
+#: The live read that brings a setting back right after its command (2.6.97), instead
+#: of the dongle's copy of the settings blocks, refreshed about once a minute (the
+#: Programme 62/64/66 writes of 2026-10-04 took 40-60 s to read back). HEEP1 answers
+#: 93VQ and HEEP2 dHrK, as the vendor app's own refresh does (captures of 2026-09-25,
+#: the changed value in the very next answer); QFLAG carries ECO and Programmes 22/25,
+#: HGEN (COST) the inverter's clock. Programme 38 raises 39 (93VQ) and 62 (dHrK) by
+#: itself, hence both for it.
+_READBACK = {
+    **{setting: ("HEEP1",) for setting in (
+        "output_source_priority", "charger_priority", "solar_supply_priority", "grid_working_range",
+        "battery_type", "output_voltage", "max_utility_charge_current", "grid_regulation_mode",
+        "max_charging_current", "grid_tie_current", "bms_restore_mains_charging_soc",
+        "bms_restore_battery_discharging_soc", "bms_inverter_startup_soc",
+        "backlight", "buzzer", "display_return_to_homepage", "overload_restart",
+        "over_temperature_restart", "overload_bypass",
+    )},
+    **{setting: ("HEEP2",) for setting in (
+        "back_to_grid_voltage", "back_to_battery_voltage", "equalization_voltage",
+        "second_output_cutoff_soc", "second_output_restore_soc", "second_output_discharge_time",
+        "second_output_delay_time", "ac_charging_start_time", "ac_charging_stop_time", "dual_output",
+    )},
+    **{setting: ("QFLAG",) for setting in ("eco", "primary_source_interrupt_alarm", "fault_code_record")},
+    "bms_lock_machine_soc": ("HEEP1", "HEEP2"),
+    "sync_inverter_clock": ("HGEN",),
+}
+
+
+def queue_readback(setting: str, during_restore: bool = False) -> None:
+    """Ask for `setting`'s read right after its command: it goes before the rest of
+    the live round, once the dongle has answered the command (_claim_dongle). Only
+    with the live reads on. A settings restore asks once at its end instead of after
+    each of its commands (settings_backup), so the power reads keep their pace."""
+    commands = _READBACK.get(setting)
+    if not commands or _live_interval() <= 0:
+        return
+    if not during_restore:
+        from . import settings_backup
+
+        if settings_backup.restore_running():
+            return
+    conn = _first_established_connection()
+    if conn is None:
+        return
+    with _SEND_LOCK:
+        pending = getattr(conn, "live_readback", None)
+        if pending is None:
+            pending = conn.live_readback = []
+        for command in commands:
+            if command not in pending:
+                pending.append(command)
+
+
+def _send_control_ci(ci_b64: str, conn: Optional[tcpstack.Connection] = None, claim: bool = True,
+                     sent_at: Optional[float] = None) -> bool:
+    """Send one dev_rpc command. `claim=False` is for the live reads, which keep
+    their own place (poll_due_connections, which passes its clock as `sent_at`);
+    every other command waits for a free place."""
     if conn is None:
         conn = _first_established_connection()
     if conn is None:
         log("[CONTROL] no established local-cloud connection to send on", level="warning")
         return False
+    if claim:
+        _claim_dongle(conn)
     # Remembered so _log_command_reply can say which command an answer is for.
     frame = base64.b64decode(ci_b64)
     conn.last_command = frame[:-3].decode("ascii", errors="replace")
+    # The dongle echoes "t" in its answer: the place it takes is freed by the answer
+    # carrying it, and by no other (_live_answered).
+    token = _random_token(8)
+    with _SEND_LOCK:
+        inflight = getattr(conn, "live_inflight", None)
+        if inflight is None:
+            inflight = conn.live_inflight = {}
+        claimed_at = inflight.pop(_CLAIMED, None)
+        if sent_at is None:
+            sent_at = claimed_at if claimed_at is not None else time.monotonic()
+        inflight[token] = sent_at
     topic = f"dtu/{conn.dtu_id}/sub/service/dev_rpc"
     payload = json.dumps(
         {
             "c": 5,
-            "t": _random_token(8),
+            "t": token,
             "s": _random_token(),
             "i": _CONTROL_RPC_ID,
             "b": {"ci": ci_b64, "no": 0, "rs": 0},
@@ -1190,6 +1341,7 @@ def send_control_switch(setting: str, turn_on: bool) -> bool:
     ok = _send_control_ci(ci)
     if ok:
         log(f"[CONTROL] {setting} -> {'on' if turn_on else 'off'}")
+        queue_readback(setting)
     return ok
 
 
@@ -1211,6 +1363,7 @@ def send_clock_sync() -> bool:
     ok = _send_control_ci(build_write_ci("^S???DAT", stamp))
     if ok:
         log(f"[CONTROL] clock sync sent: {stamp}")
+        queue_readback("sync_inverter_clock")
     return ok
 
 
@@ -1248,6 +1401,7 @@ def send_ac_charging_window(start_hour: Optional[int] = None, stop_hour: Optiona
     ok = _send_control_ci(build_write_ci("^S???ACCT", f"{start_hour:02d}00,{stop_hour:02d}00"))
     if ok:
         log(f"[CONTROL] AC charging window -> {start_hour:02d}:00-{stop_hour:02d}:00")
+        queue_readback("ac_charging_start_time")
     return ok
 
 
@@ -1305,8 +1459,30 @@ def _live_report(conn: tcpstack.Connection, now: float) -> None:
     log(f"[LIVE] since the last report: {summary}", level="warning")
 
 
+def _live_answered(conn: tcpstack.Connection, token: Optional[str] = None) -> None:
+    """The dongle answered a command (i=504, data or refusal): the place of the
+    command carrying `token` (the "t" the dongle echoes) is free, and the next
+    command may go _LIVE_AFTER_REPLY_SEC from now. Runs on the capture thread.
+
+    Matched by "t" since 2.6.99: up to 2.6.98 any answer freed the link, so after
+    one answer came late every late answer freed it for the next command, and the
+    bridge drifted one command ahead without knowing it (split pairs, rounds closed
+    before their last answers). An answer whose command already timed out is ignored.
+    No token at all (never seen): the oldest place is freed."""
+    with _SEND_LOCK:
+        inflight = getattr(conn, "live_inflight", None)
+        if not inflight:
+            return
+        if token is None:
+            token = next(iter(inflight))
+        if token not in inflight or token == _CLAIMED:
+            return
+        del inflight[token]
+        conn.live_next_ts = time.monotonic() + _LIVE_AFTER_REPLY_SEC
+
+
 def poll_due_connections() -> None:
-    """Called every second from core.py's telemetry_poll_loop. For every
+    """Called every LIVE_TICK_SEC from core.py's telemetry_poll_loop. For every
     established local-cloud connection: sends the live read cycle when it is due,
     and the full dev_rpc poll when its interval has elapsed. Each part is switched
     on by its own option (LIVE_POLL_INTERVAL_SEC, TELEMETRY_POLL_INTERVAL_SEC); a
@@ -1320,77 +1496,104 @@ def poll_due_connections() -> None:
         if dtu_id is None or conn.closed:
             continue
         if live_interval > 0:
-            queue = getattr(conn, "live_queue", None)
-            if queue is None:
-                queue = conn.live_queue = []
-            if not queue and now >= getattr(conn, "next_live_ts", 0.0):
-                conn.next_live_ts = now + live_interval
-                cycle = getattr(conn, "live_cycle", 0) + 1
-                conn.live_cycle = cycle
-                queue.extend(_LIVE_FAST)
-                queue.append(_LIVE_SLOW[cycle % len(_LIVE_SLOW)])
-                # PI30 flag status (read only) for ECO and Programmes 22/25, which no
-                # telemetry block carries: once a minute, at the end of a cycle, so it
-                # never goes out beside another command.
-                if now >= getattr(conn, "next_qflag_ts", 0.0):
-                    conn.next_qflag_ts = now + _QFLAG_INTERVAL_SEC
-                    queue.append("QFLAG")
-                conn.h_expected = frozenset(_H_BLOCKS[c] for c in queue if c in _H_BLOCKS)
-            if queue and now >= getattr(conn, "live_send_ts", 0.0):
-                command = queue.pop(0)
-                conn.live_send_ts = now + 1.0
-                try:
-                    if command in _H_BLOCKS:
-                        ci = base64.b64encode(f"{command}\r".encode("ascii")).decode()
-                    else:
-                        ci = build_write_ci(command, "")
-                    _send_control_ci(ci, conn=conn)
-                except Exception as exc:
-                    log(f"[LOCAL CLOUD ERROR] {command} query failed: {exc}", level="error")
-        if live_interval > 0:
+            with _SEND_LOCK:
+                _send_live_reads(conn, now, live_interval)
             _live_report(conn, now)
         next_poll_ts = getattr(conn, "next_poll_ts", None)
         if TELEMETRY_POLL_INTERVAL_SEC <= 0 or next_poll_ts is None or now < next_poll_ts:
             continue
-        conn.next_poll_ts = now + TELEMETRY_POLL_INTERVAL_SEC
+        _send_full_poll(conn, now, live_interval)
 
-        # DIAGNOSTIC (2026-09-13): if every poll sent so far has NOT been answered
-        # (sent > replied), the previous poll(s) stalled -- log it once, with the
-        # numbers needed to tell a count-triggered stall from a time-triggered one,
-        # rather than re-deriving this from a tcpdump capture each time it recurs.
-        sent = getattr(conn, "poll_sent_count", 0)
-        replied = getattr(conn, "poll_reply_count", 0)
-        if sent > replied and not getattr(conn, "poll_stall_logged", False):
-            since_reply = now - getattr(conn, "last_reply_ts", now)
-            since_connect = now - getattr(conn, "connect_ts", now)
-            log(
-                f"[LOCAL CLOUD DIAG] poll stall {conn.peer_ip}:{conn.peer_port}: "
-                f"{sent - replied} poll(s) unanswered since last dev_rpc_reply, "
-                f"{since_reply:.0f}s since last reply, {since_connect:.0f}s since "
-                f"CONNECT, {sent} sent total, {replied} replied total",
-                level="warning",
-            )
-            conn.poll_stall_logged = True
 
-        conn.poll_sent_count = sent + 1
-        try:
-            # "i":501 on every poll, exactly like the real cloud (see
-            # _build_dev_rpc_request's docstring).
-            conn.reply(_build_dev_rpc_request(dtu_id, 501))
-            if LOG_PACKETS:
-                log(f"[LOCAL CLOUD] dev_rpc poll sent to {conn.peer_ip}:{conn.peer_port} i=501")
-        except Exception as exc:
-            log(f"[LOCAL CLOUD ERROR] dev_rpc poll failed: {exc}", level="error")
-
+def _send_live_reads(conn: tcpstack.Connection, now: float, live_interval: float) -> None:
+    """One tick of the live reads: start a round when due, then send while a place is
+    free (_LIVE_MAX_INFLIGHT), a setting's read-back first. Called with _SEND_LOCK."""
+    queue = getattr(conn, "live_queue", None)
+    if queue is None:
+        queue = conn.live_queue = []
+    inflight = _inflight(conn, now)
+    # A round starts once every command of the previous one is answered (or timed
+    # out), so its last answers are decoded with it.
+    if not queue and not inflight and now >= getattr(conn, "next_live_ts", 0.0):
+        conn.next_live_ts = now + live_interval
+        cycle = getattr(conn, "live_cycle", 0) + 1
+        conn.live_cycle = cycle
+        queue.extend(_LIVE_PRIORITY)
+        for command in _LIVE_OTHERS[cycle % len(_LIVE_OTHERS)]:
+            if command is None:
+                command = _LIVE_SLOW[(cycle // len(_LIVE_OTHERS)) % len(_LIVE_SLOW)]
+            queue.append(command)
         # PI30 flag status (read only) for ECO and Programmes 22/25, which no
-        # telemetry block carries. Once a minute, on the poll tick -- unless the live
-        # cycle is on, which sends it itself (see above).
-        if live_interval <= 0 and now >= getattr(conn, "next_qflag_ts", 0.0):
+        # telemetry block carries: once a minute, at the end of a round.
+        if now >= getattr(conn, "next_qflag_ts", 0.0):
             conn.next_qflag_ts = now + _QFLAG_INTERVAL_SEC
-            try:
-                _send_control_ci(build_write_ci("QFLAG", ""), conn=conn)
-            except Exception as exc:
-                log(f"[LOCAL CLOUD ERROR] QFLAG query failed: {exc}", level="error")
+            queue.append("QFLAG")
+        conn.h_expected = frozenset(_H_BLOCKS[c] for c in queue if c in _H_BLOCKS)
+    readback = getattr(conn, "live_readback", None)
+    while (queue or readback) and len(inflight) < _LIVE_MAX_INFLIGHT \
+            and now >= getattr(conn, "live_next_ts", 0.0):
+        if readback:
+            # A setting's read-back (queue_readback) goes before the round.
+            command = readback.pop(0)
+            if command in _H_BLOCKS:
+                conn.h_expected = frozenset(getattr(conn, "h_expected", frozenset()) | {_H_BLOCKS[command]})
+        else:
+            command = queue.pop(0)
+        try:
+            if command in _H_BLOCKS:
+                ci = base64.b64encode(f"{command}\r".encode("ascii")).decode()
+            else:
+                ci = build_write_ci(command, "")
+            _send_control_ci(ci, conn=conn, claim=False, sent_at=now)
+        except Exception as exc:
+            log(f"[LOCAL CLOUD ERROR] {command} query failed: {exc}", level="error")
+            break
+
+
+def _send_full_poll(conn: tcpstack.Connection, now: float, live_interval: float) -> None:
+    """The dongle's own telemetry poll (i=501), and QFLAG on its tick when the live
+    reads are off."""
+    dtu_id = conn.dtu_id
+    conn.next_poll_ts = now + TELEMETRY_POLL_INTERVAL_SEC
+    # DIAGNOSTIC (2026-09-13): if every poll sent so far has NOT been answered
+    # (sent > replied), the previous poll(s) stalled -- log it once, with the
+    # numbers needed to tell a count-triggered stall from a time-triggered one,
+    # rather than re-deriving this from a tcpdump capture each time it recurs.
+    sent = getattr(conn, "poll_sent_count", 0)
+    replied = getattr(conn, "poll_reply_count", 0)
+    if sent > replied and not getattr(conn, "poll_stall_logged", False):
+        since_reply = now - getattr(conn, "last_reply_ts", now)
+        since_connect = now - getattr(conn, "connect_ts", now)
+        log(
+            f"[LOCAL CLOUD DIAG] poll stall {conn.peer_ip}:{conn.peer_port}: "
+            f"{sent - replied} poll(s) unanswered since last dev_rpc_reply, "
+            f"{since_reply:.0f}s since last reply, {since_connect:.0f}s since "
+            f"CONNECT, {sent} sent total, {replied} replied total",
+            level="warning",
+        )
+        conn.poll_stall_logged = True
+
+    conn.poll_sent_count = sent + 1
+    try:
+        # "i":501 on every poll, exactly like the real cloud (see
+        # _build_dev_rpc_request's docstring).
+        conn.reply(_build_dev_rpc_request(dtu_id, 501))
+        if LOG_PACKETS:
+            log(f"[LOCAL CLOUD] dev_rpc poll sent to {conn.peer_ip}:{conn.peer_port} i=501")
+    except Exception as exc:
+        log(f"[LOCAL CLOUD ERROR] dev_rpc poll failed: {exc}", level="error")
+
+    # PI30 flag status (read only) for ECO and Programmes 22/25, which no
+    # telemetry block carries. Once a minute, on the poll tick -- unless the live
+    # cycle is on, which sends it itself (see above).
+    if live_interval <= 0 and now >= getattr(conn, "next_qflag_ts", 0.0):
+        conn.next_qflag_ts = now + _QFLAG_INTERVAL_SEC
+        try:
+            # Not claim: the live reads are off here, and the telemetry
+            # thread must never block on a command from Home Assistant.
+            _send_control_ci(build_write_ci("QFLAG", ""), conn=conn, claim=False, sent_at=now)
+        except Exception as exc:
+            log(f"[LOCAL CLOUD ERROR] QFLAG query failed: {exc}", level="error")
 
 
 def _on_established(conn: tcpstack.Connection) -> None:

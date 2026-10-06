@@ -2,6 +2,114 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.100] - 2026-10-06
+
+### Changed
+
+- **Two live reads kept with the dongle at once, each answer matched by its "t".** Measured
+  on 2.6.99 (one command at a time): the dongle answered in 0.76 s (median, a sixth over
+  1 s), so the power values came every 4.4 s instead of the 2.8 s of 2.6.96, which reached
+  that pace only because it ran one command ahead by accident. The bridge now keeps up to
+  two commands with the dongle on purpose (`_LIVE_MAX_INFLIGHT`), sends the next one as soon
+  as one is answered, frees a place only with the answer carrying its "t", and gives up on
+  an answer after 2.5 s (counted as `answer missing` in the `[LIVE]` report). A round still
+  starts once every command of the previous one is answered, so the pairs stay together. A
+  command from Home Assistant takes the next free place, never as a third command.
+
+## [2.6.99] - 2026-10-06
+
+### Fixed
+
+- **The live reads no longer drift one command ahead of the dongle** (2.6.94-2.6.98). Any
+  answer freed the link for the next command; after one answer came later than the 1 s
+  timeout, each late answer did so while the previous command was still pending, and the
+  bridge stayed one command ahead for good (seen on the wire: the answer "t" always that of
+  the command before). Rounds then closed before their last answers (`[LIVE] cycle closed
+  without all its blocks` 13-17 times a minute), which split the HBAT/HBMS1 pair (battery
+  power) and the HBMS2/HBMS3 pair (cell summary), and a command from Home Assistant could go
+  out over a pending read. Only the answer carrying the last command's "t" frees the link
+  now, and a round starts once its predecessor's last command is answered (or timed out).
+
+## [2.6.98] - 2026-10-06
+
+### Fixed
+
+- **A read-back no longer waits for the end of the live round.** On 2.6.97 the buzzer took
+  5.7 s from the command to Home Assistant: the HEEP1 answer was held, like the round's
+  other blocks, until the round's last one. The settings blocks (93VQ, dHrK) and the clock
+  block (COST) are now decoded as soon as they arrive.
+
+## [2.6.97] - 2026-10-06
+
+### Changed
+
+- **A setting reads back seconds after its command.** Most settings come back from the
+  93VQ and dHrK blocks, which the bridge only had through the dongle's copy, refreshed
+  about once a minute (the Programme 62/64/66 writes took 40-60 s to show). Right after a
+  command, once the dongle has answered it, the bridge now reads the block live before the
+  rest of the round: `HEEP1` (93VQ) or `HEEP2` (dHrK), the reads the vendor app's own
+  refresh sends (captures of 2026-09-25, the new value in the very next answer), `QFLAG`
+  for ECO and Programmes 22/25, `HGEN` for the clock (`fakecloud._READBACK`). A settings
+  restore asks once per block at its end instead of after each command, and checks the
+  result after 15 s instead of 90 s. Only with `LIVE_POLL_INTERVAL_SEC` on.
+
+## [2.6.96] - 2026-10-06
+
+### Changed
+
+- **Power values first.** The dongle takes about 0.55 s a command whatever the pause
+  (2.6.95 measured the same 5.1 s cycle as 2.6.94), so a cycle of ten reads cannot go
+  faster. A cycle now reads grid, output and PV power (HGRID, HOP, HPV) plus one pair of
+  the other reads in turn: battery + BMS current (HBAT, HBMS1), BMS capacities + cells
+  (HBMS2, HBMS3), then mode + one slow read (QMOD + HSTS/HTEMP/HGEN/HPVB/QPIWS). About
+  2.8 s a cycle: the power values (and the calculated grid import, output and generation)
+  refresh every cycle, the battery, BMS, cells and mode about every 8 s, the slow reads
+  about every 40 s. Each pair the decoder needs in one payload stays in one cycle.
+  `LIVE_POLL_INTERVAL_SEC` can now go down to 1 (back to back).
+
+## [2.6.95] - 2026-10-06
+
+### Changed
+
+- **Live reads a little faster again**: the next command goes 0.05 s after the dongle's
+  answer instead of 0.2 s. Measured on 2.6.94 with `LIVE_POLL_INTERVAL_SEC: 3`: the dongle
+  answers in about 0.3 s, a cycle took 5.1 s and no command was refused.
+
+## [2.6.94] - 2026-10-05
+
+### Changed
+
+- **Faster live reads.** The commands of a live cycle went out one per second whatever
+  the answer time, so a cycle took about 9 s. The dongle answers in 0.4-1 s: the next
+  command now goes 0.2 s after the answer (still 1 s after the send when no answer comes),
+  and the bridge's loop ticks every 0.1 s for it. `LIVE_POLL_INTERVAL_SEC` can go down to
+  3 (was 5); a value shorter than a cycle runs the cycles back to back. With the dongle
+  busy almost all the time, a command from Home Assistant (or a settings restore) now
+  waits up to 2 s for the answer to the read in flight, then pauses the live reads until
+  its own answer, so it is not refused (e=104).
+
+### Fixed
+
+- **Grid Connection Function no longer shows "(prog 44)"**: the 2026-09-27 front-panel test of
+  Programme 44 moved only Solar Feed To Grid, which keeps the number. No programme is known for
+  Grid Connection Function, so it has none.
+- **Programme 64 and 65 read-back works at every value.** dHrK token 16 packs the second
+  output's restore SOC (64) and discharge time (65, last three digits). The SOC used to be read
+  as the first two digits, so 5 % or 100 % (both allowed by the Home Assistant control) would
+  have read wrong, and 65 not at all. The token is now read from the right.
+- **The five sensors renamed in 2.6.64 are removed from Home Assistant** (eco,
+  charging_priority_order, parallel_mode, power_supply_from_pv_to_load_in_ac_state,
+  does_machine_have_output). The cleanup of old discovery configs only covered sensors still
+  declared, so these stayed as frozen entities; their configs are now emptied on every
+  discovery (`mqtt._WITHDRAWN_SENSORS`).
+- **Saving the inverter settings can no longer lose the file**: the new file is written in
+  full before the previous one becomes `.bak` (it used to be renamed first).
+- **Settings Backup Status in French** with LANGUAGE=fr, and cut to Home Assistant's 255
+  characters (a long "still different" list after a restore was refused by Home Assistant).
+- Clean-up from a code review: one table of programme numbers (`i18n.CONTROL_PROGRAMMES`, also
+  used for the comments of the settings file), a French name listed twice, outdated comments,
+  unused names.
+
 ## [2.6.93] - 2026-10-05
 
 ### Changed

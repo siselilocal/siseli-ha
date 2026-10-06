@@ -851,25 +851,37 @@ def health_logger() -> None:
             )
 
 
+#: telemetry_poll_loop's tick. The live reads send their next command a fraction of a
+#: second after the dongle answers (fakecloud._live_answered), which a 1 s tick would
+#: round back up to a second; everything else still runs once a second.
+LIVE_TICK_SEC = 0.1
+_TICKS_PER_SECOND = int(round(1 / LIVE_TICK_SEC))
+
+
 def telemetry_poll_loop() -> None:
-    """Local-cloud maintenance at 1 s granularity: dev_rpc polls when due, and TCP
-    retransmission of our own unacked segments (tcpstack.retransmit_tick) -- the
-    latter is why this runs even when polling is disabled. Not piggybacked on
-    health_logger's 10 s tick: a live test configuring 5 s still measured a 10 s
-    gap between polls when this checked from health_logger, because the check
-    itself only ran once per tick."""
+    """Local-cloud maintenance: dev_rpc polls and live reads when due (every
+    LIVE_TICK_SEC), and once a second TCP retransmission of our own unacked segments
+    (tcpstack.retransmit_tick) -- the latter is why this runs even when polling is
+    disabled. Not piggybacked on health_logger's 10 s tick: a live test configuring
+    5 s still measured a 10 s gap between polls when this checked from
+    health_logger, because the check itself only ran once per tick."""
+    tick = 0
     while _state.RUNNING:
-        time.sleep(1)
+        time.sleep(LIVE_TICK_SEC)
+        each_second = tick % _TICKS_PER_SECOND == 0
+        tick += 1
         try:
-            tcpstack.retransmit_tick()
+            if each_second:
+                tcpstack.retransmit_tick()
             fakecloud.poll_due_connections()
         except Exception as exc:
             log(f"[LOCAL CLOUD ERROR] {exc}", level="error")
-        # A live block decoded inside the previous publish's UPDATE_INTERVAL_SEC window
-        # is held back by the throttle; flushing it from health_logger's 10 s tick made
-        # it wait up to 10 s more. Checked here every second instead (publish_tick is
-        # cheap and takes PUBLISH_LOCK like the health thread's own call).
-        publish_tick()
+        if each_second:
+            # A live block decoded inside the previous publish's UPDATE_INTERVAL_SEC
+            # window is held back by the throttle; flushing it from health_logger's 10 s
+            # tick made it wait up to 10 s more. Checked here every second instead
+            # (publish_tick is cheap and takes PUBLISH_LOCK like the health thread's).
+            publish_tick()
 
 
 def restore_arp() -> None:
