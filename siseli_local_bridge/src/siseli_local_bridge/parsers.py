@@ -163,6 +163,9 @@ KNOWN_BLOCK_NAMES: FrozenSet[str] = frozenset(
     {
         "2ONL", "2l0E", "93VQ", "COST", "Mpod", "SUCV", "V4W3", "WdRR",
         "Yavb", "dHrK", "eo8w", "hR6Y", "noeP", "uxJp", "v09K",
+        # HPVINV08 (firmware 0020.05, captured 2026-11-12) reports the same two
+        # BMS payloads under these names instead of uxJp/v09K.
+        "dbXf", "MzuA",
     }
 )
 
@@ -2349,15 +2352,21 @@ class SolarParser:
         if vals:
             state.update(SolarParser._parse_cost_energy(vals))
 
-        # BMS cell list -> v09K
-        vals = parsed.get("v09K", ("", []))[1]
+        # BMS cell list -> v09K, or dbXf on firmware that names the same list
+        # differently. HPVINV08 (firmware 0020.05, captured 2026-11-12) sends the
+        # 16 cell voltages and the summary as dbXf/MzuA instead of v09K/uxJp; the
+        # token shapes are identical, so the same decoders apply. The original
+        # names are tried first, so devices that send them are unaffected.
+        vals = (parsed.get("v09K") or parsed.get("dbXf") or ("", []))[1]
         if vals:
             state.update(SolarParser._parse_cell_list(vals))
 
-        # BMS capacities / display metadata -> uxJp
-        vals = parsed.get("uxJp", ("", []))[1]
+        # BMS capacities / display metadata -> uxJp, or MzuA (see above).
+        vals = (parsed.get("uxJp") or parsed.get("MzuA") or ("", []))[1]
         if vals:
-            cells = SolarParser._valid_cells(parsed.get("v09K", ("", []))[1])
+            cells = SolarParser._valid_cells(
+                (parsed.get("v09K") or parsed.get("dbXf") or ("", []))[1]
+            )
             state.update(SolarParser._parse_bms_capacity(vals, cells))
 
         # battery_status is derived after the energy calculation, from the same

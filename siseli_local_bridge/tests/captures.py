@@ -66,6 +66,26 @@ CAPTURE_IDENTITY = {
     "v09K": BLOCK_V09K_CELLS_16,
 }
 
+# ---------------------------------------------------------------------------
+# Device C -- HPVINV08, firmware 0020.05 (Easun ISolar SMT 6.2KW), 16-cell
+# bank. Captured 2026-11-12 while charging with the bridge in pass-through.
+# This firmware names the two BMS payloads dbXf and MzuA instead of v09K and
+# uxJp; the token shapes are the same, which is why _try_ascii_schema accepts
+# either name. Values are verbatim from the [BLOCK RAW] output of the capture.
+# ---------------------------------------------------------------------------
+BLOCK_SUCV_HPVINV08 = b"(HPVINV08\r"
+BLOCK_DBXF_CELLS_16 = (
+    b"(3440 3445 3443 3516 3413 3414 3444 3407 3470 3460 3404 3425 3417 3422 3424 3419 00000000\r"
+)
+BLOCK_MZUA_BMS_CAPACITY = (
+    b"(0000.0 0000.0 0 3516 0004 3404 0011 100.0 0000000000000000\r"
+)
+CAPTURE_BMS_HPVINV08 = {
+    "SUCV": BLOCK_SUCV_HPVINV08,
+    "dbXf": BLOCK_DBXF_CELLS_16,
+    "MzuA": BLOCK_MZUA_BMS_CAPACITY,
+}
+
 # Golden expected state for CAPTURE_TELEMETRY, taken from the add-on's own
 # "Published to HA" line for that exact payload. Config-INDEPENDENT values only --
 # anything scaled by INVERTER_COUNT lives in EXPECTED_TELEMETRY_SCALED below.

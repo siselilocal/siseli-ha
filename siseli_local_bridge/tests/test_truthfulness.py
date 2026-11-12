@@ -207,6 +207,53 @@ class TestSingleWriterPerKey(_ParserTestCase):
         self.assertEqual(summary["bms_cell_delta_mv"], 7)
 
 
+class TestBmsBlocksUnderAlternateNames(_ParserTestCase):
+    """HPVINV08 (firmware 0020.05) sends the two BMS payloads as dbXf and MzuA
+    instead of v09K and uxJp. The token shapes are identical, so the same decoders
+    must read them -- and v09K/uxJp must still win when a payload carries both,
+    because nothing says a device cannot send all four.
+    """
+
+    def test_dbxf_cells_are_decoded_like_v09k(self):
+        state = SolarParser._try_ascii_schema({"dbXf": captures.BLOCK_DBXF_CELLS_16})
+        self.assertEqual(state["bms_cell_count"], 16)
+        self.assertEqual(state["cell_1_mv"], 3440)
+        self.assertEqual(state["cell_4_mv"], 3516)
+        self.assertEqual(state["cell_11_mv"], 3404)
+        for key in SUMMARY_KEYS:
+            with self.subTest(key=key):
+                self.assertNotIn(key, state)
+
+    def test_mzua_summary_is_decoded_like_uxjp(self):
+        state = SolarParser._try_ascii_schema({"MzuA": captures.BLOCK_MZUA_BMS_CAPACITY})
+        self.assertEqual(state["bms_max_cell_mv"], 3516)
+        self.assertEqual(state["bms_max_cell_pos"], 4)
+        self.assertEqual(state["bms_min_cell_mv"], 3404)
+        self.assertEqual(state["bms_min_cell_pos"], 11)
+        self.assertEqual(state["bms_cell_delta_mv"], 112)
+
+    def test_dbxf_is_used_when_the_summary_is_zero(self):
+        state = SolarParser._try_ascii_schema({
+            "uxJp": captures.SYNTH_UXJP_ZERO_SUMMARY,
+            "dbXf": captures.BLOCK_DBXF_CELLS_16,
+        })
+        self.assertEqual(state["bms_max_cell_mv"], 3516)
+        self.assertEqual(state["bms_max_cell_pos"], 4)
+        self.assertEqual(state["bms_min_cell_mv"], 3404)
+        self.assertEqual(state["bms_min_cell_pos"], 11)
+
+    def test_both_names_together_prefer_the_original_names(self):
+        state = SolarParser._try_ascii_schema({
+            "v09K": captures.BLOCK_V09K_CELLS_16,
+            "uxJp": captures.BLOCK_UXJP_BMS_CAPACITY,
+            "dbXf": captures.BLOCK_DBXF_CELLS_16,
+            "MzuA": captures.BLOCK_MZUA_BMS_CAPACITY,
+        })
+        self.assertEqual(state["cell_1_mv"], 3321)
+        self.assertEqual(state["bms_max_cell_mv"], 3327)
+        self.assertEqual(state["bms_max_cell_pos"], 9)
+
+
 SUMMARY_KEYS = ("bms_max_cell_mv", "bms_max_cell_pos", "bms_min_cell_mv",
                 "bms_min_cell_pos", "bms_cell_delta_mv")
 
