@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **BMS battery current direction on HPVINV08 firmware 0020.05.** Some firmware puts
+  the discharge magnitude in Yavb's "charging" token and the charge magnitude in its
+  "discharging" token. The bridge now orients the BMS pair by the inverter's own 2ONL
+  ammeter when exactly one side of each pair is non-zero and the two disagree. This
+  keeps `battery_status`, the calculated battery charge/discharge power and energy,
+  and the two BMS current sensors from reporting charge while the battery discharges
+  (and the reverse). The swap is reported once as `[BMS CURRENT DIRECTION]`.
+
 ## [2.7.00] - 2026-10-06
 
 ### Changed

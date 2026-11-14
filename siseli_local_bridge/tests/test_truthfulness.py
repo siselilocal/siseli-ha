@@ -2634,6 +2634,88 @@ class TestBatteryStatusMatchesReportedPower(_ParserTestCase):
         self.assertEqual(state["c_battery_charge_power_w"], 344)
         self.assertEqual(state["battery_status"], "Charge")
 
+    def test_reversed_bms_fields_are_oriented_by_the_inverter_ammeter_while_discharging(self):
+        """HPVINV08 0020.05 puts the discharge magnitude in Yavb's charging token.
+
+        Live: 2ONL said dischg_current=11 A, Yavb said charging=11.7 A and
+        discharging=0. Trusting the token names published "Charge" while the battery
+        was discharging and credited the wrong energy counter.
+        """
+        state = self._resolve({
+            "bat_v": 53.7,
+            "bat_charge_current": 0.0,      # the inverter's ammeter
+            "dischg_current": 11.0,
+            "bms_charging_current_a": 11.7,  # Yavb's token 6
+            "bms_discharge_current_a": 0.0,  # Yavb's token 7
+        })
+        self.assertEqual(state["bms_charging_current_a"], 0.0)
+        self.assertEqual(state["bms_discharge_current_a"], 11.7)
+        self.assertEqual(state["c_battery_charge_power_w"], 0)
+        self.assertEqual(state["c_battery_discharge_power_w"], 628)
+        self.assertEqual(state["battery_status"], "Discharge")
+
+    def test_reversed_bms_fields_are_oriented_by_the_inverter_ammeter_while_charging(self):
+        """The same swap in the other direction: Yavb's discharge token carried 33.8 A
+        while 2ONL's bat_charge_current carried 35 A, so the BMS pair was reversed."""
+        state = self._resolve({
+            "bat_v": 53.7,
+            "bat_charge_current": 35.0,      # the inverter's ammeter
+            "dischg_current": 0.0,
+            "bms_charging_current_a": 0.0,   # Yavb's token 6
+            "bms_discharge_current_a": 33.8, # Yavb's token 7
+        })
+        self.assertEqual(state["bms_charging_current_a"], 33.8)
+        self.assertEqual(state["bms_discharge_current_a"], 0.0)
+        self.assertEqual(state["c_battery_charge_power_w"], 1815)
+        self.assertEqual(state["c_battery_discharge_power_w"], 0)
+        self.assertEqual(state["battery_status"], "Charge")
+
+    def test_bms_fields_are_left_alone_when_the_two_sources_agree(self):
+        state = self._resolve({
+            "bat_v": 53.7,
+            "bat_charge_current": 5.0,
+            "dischg_current": 0.0,
+            "bms_charging_current_a": 5.2,
+            "bms_discharge_current_a": 0.0,
+        })
+        self.assertEqual(state["bms_charging_current_a"], 5.2)
+        self.assertEqual(state["bms_discharge_current_a"], 0.0)
+        self.assertEqual(state["battery_status"], "Charge")
+
+    def test_bms_fields_are_not_reoriented_without_an_ammeter_direction(self):
+        """The live charging case has 0 A on both 2ONL tokens; the BMS is then the
+        only source and must stay untouched."""
+        state = self._resolve({
+            "bat_v": 53.7,
+            "bat_charge_current": 0.0,
+            "dischg_current": 0.0,
+            "bms_charging_current_a": 6.4,
+            "bms_discharge_current_a": 0.0,
+        })
+        self.assertEqual(state["bms_charging_current_a"], 6.4)
+        self.assertEqual(state["bms_discharge_current_a"], 0.0)
+        self.assertEqual(state["battery_status"], "Charge")
+
+    def test_the_bms_direction_swap_is_reported_once(self):
+        parser_module.BMS_CURRENT_DIRECTION_LOGGED = False
+        with mock.patch("src.siseli_local_bridge.parsers.log_kv") as logged:
+            self._resolve({
+                "bat_v": 53.7,
+                "bat_charge_current": 0.0,
+                "dischg_current": 11.0,
+                "bms_charging_current_a": 11.7,
+                "bms_discharge_current_a": 0.0,
+            })
+            self._resolve({
+                "bat_v": 53.7,
+                "bat_charge_current": 0.0,
+                "dischg_current": 11.0,
+                "bms_charging_current_a": 11.7,
+                "bms_discharge_current_a": 0.0,
+            })
+        tags = [call.args[0] for call in logged.call_args_list if call.args]
+        self.assertEqual(tags.count("[BMS CURRENT DIRECTION]"), 1)
+
     def test_status_and_power_can_never_contradict(self):
         for label, inputs, expected in (
             ("idle", {"bat_v": 53.7, "bat_charge_current": 0.0, "dischg_current": 0.0}, "Idle"),

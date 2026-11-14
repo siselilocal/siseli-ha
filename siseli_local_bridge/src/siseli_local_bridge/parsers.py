@@ -141,6 +141,11 @@ PUBLISH_OUTCOMES = {
 
 #: One-shot guard so a rejected current is reported once, not per payload.
 BATTERY_CURRENT_REJECTED_LOGGED = False
+#: One-shot guard for the BMS current pair being reversed relative to the inverter's
+#: own ammeter. Some firmware reports the discharge magnitude in the "charging" token
+#: and the charge magnitude in the "discharging" token; the first swap is worth a
+#: warning, every later payload is not.
+BMS_CURRENT_DIRECTION_LOGGED = False
 GRID_VALUE_REJECTED_LOGGED = False
 #: One-shot guard for a WdRR sign that contradicts the published flow direction. The
 #: disagreement is reported, not resolved: nobody has captured the grid path
@@ -1038,6 +1043,66 @@ class SolarParser:
         return None
 
     @staticmethod
+    def _reconcile_battery_current_direction(state: Dict[str, object]) -> None:
+        """Orient the BMS current pair by the inverter's own ammeter.
+
+        Some HPVINV08 firmware puts the discharge magnitude in Yavb's "charging"
+        token and the charge magnitude in its "discharging" token. On the live device
+        the inversion was visible both ways: while 2ONL's ``bat_charge_current`` read
+        35-39 A, Yavb's charging token read 0 and its discharge token read 33.8-38.6 A;
+        while 2ONL's ``dischg_current`` read 11 A, the charging token read 11.7 A and
+        the discharge token read 0.
+
+        The names cannot be trusted on their own, but the inverter's ammeter carries
+        the direction. When exactly one side of each pair is non-zero and they
+        disagree, move the BMS magnitude to the direction the ammeter reports. This
+        keeps the calculated power, ``battery_status``, the energy counters and the
+        two BMS current sensors consistent instead of publishing charge while the
+        battery discharges.
+        """
+        legacy_charge = SolarParser._to_float_or_none(state.get("bat_charge_current"))
+        legacy_discharge = SolarParser._to_float_or_none(state.get("dischg_current"))
+        bms_charge = SolarParser._to_float_or_none(state.get("bms_charging_current_a"))
+        bms_discharge = SolarParser._to_float_or_none(state.get("bms_discharge_current_a"))
+
+        if legacy_charge is None or legacy_discharge is None:
+            return
+        if bms_charge is None and bms_discharge is None:
+            return
+
+        legacy_charging = legacy_charge > 0.01 and legacy_discharge <= 0.01
+        legacy_discharging = legacy_discharge > 0.01 and legacy_charge <= 0.01
+        if not legacy_charging and not legacy_discharging:
+            return
+
+        bms_charging = bms_charge is not None and bms_charge > 0.01
+        bms_discharging = bms_discharge is not None and bms_discharge > 0.01
+        if legacy_charging and not bms_charging and bms_discharging:
+            corrected_charge = bms_discharge
+            corrected_discharge = 0.0
+        elif legacy_discharging and not bms_discharging and bms_charging:
+            corrected_charge = 0.0
+            corrected_discharge = bms_charge
+        else:
+            return
+
+        state["bms_charging_current_a"] = round(corrected_charge, 1)
+        state["bms_discharge_current_a"] = round(corrected_discharge, 1)
+
+        global BMS_CURRENT_DIRECTION_LOGGED
+        if not BMS_CURRENT_DIRECTION_LOGGED:
+            BMS_CURRENT_DIRECTION_LOGGED = True
+            log_kv(
+                "[BMS CURRENT DIRECTION]",
+                level="warning",
+                inverter_ammeter="charge" if legacy_charging else "discharge",
+                bms_charging_current_a=bms_charge,
+                bms_discharge_current_a=bms_discharge,
+                corrected_charging_current_a=round(corrected_charge, 1),
+                corrected_discharge_current_a=round(corrected_discharge, 1),
+            )
+
+    @staticmethod
     def _accumulate_kwh(state: Dict[str, object], key: str, power_w: float, dt_seconds: float) -> None:
         previous = SolarParser._to_float_or_none(_shared_state.LAST_STATE.get(key)) or 0.0
         total = previous + SolarParser._power_to_kwh_delta(power_w, dt_seconds)
@@ -1132,6 +1197,7 @@ class SolarParser:
             bat_v = SolarParser._to_float_or_none(
                 state.get("bat_v", _shared_state.LAST_STATE.get("bat_v"))
             )
+            SolarParser._reconcile_battery_current_direction(state)
             charge_a = SolarParser._battery_current(
                 state, "bms_charging_current_a", "bat_charge_current", factor
             )
